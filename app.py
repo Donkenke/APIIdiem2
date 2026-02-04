@@ -21,9 +21,9 @@ st.set_page_config(page_title="Monitor IDIEM Pro", page_icon="⚡", layout="wide
 BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico"
 DB_FILE = "licitaciones_v11_fast_ui.db" 
 ITEMS_PER_PAGE = 50 
-MAX_WORKERS = 3  # OPTIMIZED: Reduced from 5 to be more respectful to API
+MAX_WORKERS = 6  # OPTIMIZED: Reduced from 5 to be more respectful to API
 DETAIL_BATCH_SIZE = 20  # OPTIMIZED: Fetch details in smaller batches
-REQUEST_DELAY = 0.15  # OPTIMIZED: Slightly increased from 0.1 to reduce load
+REQUEST_DELAY = 0.08  # OPTIMIZED: Slightly increased from 0.1 to reduce load
 
 # --- SMART CATEGORIZATION (Raíces Inteligentes) ---
 SMART_CATEGORIES = {
