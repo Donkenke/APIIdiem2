@@ -21,9 +21,9 @@ st.set_page_config(page_title="Monitor IDIEM Pro", page_icon="⚡", layout="wide
 BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico"
 DB_FILE = "licitaciones_v11_fast_ui.db" 
 ITEMS_PER_PAGE = 50 
-MAX_WORKERS = 3  # REDUCED from 5 to be more respectful to API
-DETAIL_BATCH_SIZE = 20  # NEW: Fetch details in smaller batches
-REQUEST_DELAY = 0.2  # INCREASED from 0.1 to reduce load
+MAX_WORKERS = 3  # OPTIMIZED: Reduced from 5 to be more respectful to API
+DETAIL_BATCH_SIZE = 20  # OPTIMIZED: Fetch details in smaller batches
+REQUEST_DELAY = 0.15  # OPTIMIZED: Slightly increased from 0.1 to reduce load
 
 # --- SMART CATEGORIZATION (Raíces Inteligentes) ---
 SMART_CATEGORIES = {
@@ -187,18 +187,16 @@ def get_api_session():
     session.mount("http://", adapter)
     return session
 
-# OPTIMIZED: Fetch summaries with caching
 @st.cache_data(ttl=300) 
 def fetch_summaries_raw(start_date, end_date, ticket):
     """
-    OPTIMIZATION 1: Use cached summaries when available
-    OPTIMIZATION 2: Parallel fetching of uncached dates
+    OPTIMIZED: Uses cache for already-fetched days and parallel fetching for new ones
     """
     results = []
     errors = []
     delta = (end_date - start_date).days + 1
     
-    # Check which dates need fetching
+    # OPTIMIZATION 1: Check which dates are already cached
     dates_to_fetch = []
     for i in range(delta):
         d = start_date + timedelta(days=i)
@@ -213,10 +211,8 @@ def fetch_summaries_raw(start_date, end_date, ticket):
         else:
             dates_to_fetch.append((d, d_str))
     
+    # OPTIMIZATION 2: Parallel fetch for uncached dates
     if dates_to_fetch:
-        st.info(f"Descargando {len(dates_to_fetch)} días no cacheados...")
-        
-        # Parallel fetch for uncached dates
         def fetch_day(date_tuple):
             d, d_str = date_tuple
             url = f"{BASE_URL}/licitaciones.json?fecha={d_str}&ticket={ticket}"
@@ -245,7 +241,7 @@ def fetch_summaries_raw(start_date, end_date, ticket):
                     results.extend(items)
                 if error:
                     errors.append(error)
-                time.sleep(REQUEST_DELAY)  # Rate limiting
+                time.sleep(REQUEST_DELAY)
             
     return results, errors
 
@@ -254,15 +250,47 @@ def fetch_detail_worker(args):
     try:
         session = get_api_session() 
         url = f"{BASE_URL}/licitaciones.json?codigo={code}&ticket={ticket}"
-        r = session.get(url, verify=False, timeout=15)
-        time.sleep(REQUEST_DELAY)  # INCREASED delay
+        r = session.get(url, verify=False, timeout=20)
+        time.sleep(REQUEST_DELAY)  # OPTIMIZED: Rate limiting
         if r.status_code == 200:
             js = r.json()
-            if 'Listado' in js and len(js['Listado']) > 0:
+            if js.get('Listado'):
                 return code, js['Listado'][0]
-        return code, None
-    except:
-        return code, None
+    except: pass
+    return code, None
+
+# --- SMART CATEGORIZATION LOGIC ---
+def get_cat_smart(txt):
+    """
+    Categoriza usando raíces. Más rápido y robusto.
+    """
+    if not txt: return None, None
+    tl = txt.lower()
+    for category, roots in SMART_CATEGORIES.items():
+        for root in roots:
+            if root in tl:
+                return category, root 
+    return None, None
+
+# --- SCORING LOGIC ---
+def calculate_relevance_heuristic(tenders_list):
+    scores = []
+    MAX_SCORE_THRESHOLD = 25.0 
+    for t in tenders_list:
+        text = f"{t.get('Nombre', '')} {t.get('Descripcion', '')}".lower()
+        current_score = 0.0
+        for root_word, points in SCORING_RULES.items():
+            if root_word in text:
+                current_score += points
+        final_score = max(0.0, current_score)
+        percentage = min(final_score / MAX_SCORE_THRESHOLD, 1.0)
+        scores.append(percentage)
+    return scores
+
+# --- UTILS ---
+def format_clp(v):
+    try: return "${:,.0f}".format(float(v)).replace(",", ".")
+    except: return "$0"
 
 def parse_date(s):
     if not s: return None
@@ -294,172 +322,159 @@ def calculate_relevance_heuristic(results):
 
 def main():
     init_db()
+    if 'page_number' not in st.session_state: st.session_state.page_number = 1
     
-    st.title("⚡ Monitor IDIEM Pro - Optimizado")
-    st.caption("Versión optimizada con cache inteligente y fetching en paralelo")
+    ticket = st.secrets.get("MP_TICKET")
+    st.title("⚡ Monitor IDIEM Pro (Modo Rápido - Optimizado)")
     
-    t_search, t_res, t_audit, t_sav = st.tabs(["🔎 Búsqueda", "📋 Resultados", "📊 Auditoría", "💾 Guardados"])
-    
-    with t_search:
-        with st.form("search"):
-            ticket = st.text_input("🎫 Ticket MercadoPublico", value="", type="password")
-            
-            col1, col2 = st.columns(2)
-            with col1: start = st.date_input("Desde", value=datetime.now() - timedelta(days=7))
-            with col2: end = st.date_input("Hasta", value=datetime.now())
-            
-            cats = st.multiselect("Categorías (Todas si vacío)", list(SMART_CATEGORIES.keys()))
-            show_closed = st.checkbox("Incluir licitaciones cerradas", value=False)
-            
-            submitted = st.form_submit_button("🚀 Buscar", use_container_width=True)
+    if not ticket: 
+        st.warning("Falta Ticket (MP_TICKET en secrets)")
+        st.stop()
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        today = datetime.now()
+        dr = st.date_input("Rango", (today - timedelta(days=15), today), max_value=today, format="DD/MM/YYYY")
+        show_closed = st.checkbox("Incluir Cerradas", value=False)
+    with c2:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Buscar Datos", type="primary"):
+            st.cache_data.clear()
+            if 'search_results' in st.session_state: del st.session_state['search_results']
+            st.rerun()
+    with c3:
+        total_roots = sum(len(v) for v in SMART_CATEGORIES.values())
+        st.metric("Raíces Inteligentes", total_roots)
+
+    t_res, t_audit, t_sav = st.tabs(["🔍 Resultados", "🕵️ Auditoría", "💾 Guardados"])
+
+    if 'search_results' not in st.session_state:
+        if isinstance(dr, tuple): start, end = dr[0], dr[1] if len(dr)>1 else dr[0]
+        else: start = end = dr
+        ignored_set = get_ignored_set()
         
-        if submitted and ticket:
-            audit_logs = []
+        with st.spinner("1. Descargando resúmenes..."):
+            raw_items, fetch_errors = fetch_summaries_raw(start, end, ticket)
             
-            # 1. Get summaries (now with caching and parallel fetching)
-            summaries, errors = fetch_summaries_raw(start, end, ticket)
-            if errors: 
-                st.warning(f"Errores: {len(errors)}")
-                for e in errors[:5]: st.caption(e)
+        if fetch_errors:
+            st.warning(f"Advertencia: {len(fetch_errors)} días tuvieron problemas.")
+
+        audit_logs = []
+        candidates = []
+        codes_needed_for_api = []
+        cached_map = {}
+
+        # 1. SMART FILTER
+        for item in raw_items:
+            code = item.get('CodigoExterno')
+            name = item.get('Nombre', '')
+            desc = item.get('Descripcion', '')
+            pub_date = item.get('FechaPublicacion', '')
+            log = {"ID": code, "Nombre": name, "Publicado": pub_date, "Estado_Audit": "?", "Motivo": ""}
             
-            st.info(f"📥 {len(summaries)} licitaciones obtenidas")
+            if code in ignored_set:
+                log["Estado_Audit"], log["Motivo"] = "Oculto", "Lista Negra"
+                audit_logs.append(log)
+                continue
+
+            full_txt = f"{name} {desc}"
+            # SMART CATEGORIZATION
+            cat, kw = get_cat_smart(full_txt)
             
-            # 2. Filter candidates
-            search_cats = cats if cats else list(SMART_CATEGORIES.keys())
-            candidates = []
-            ignored = get_ignored_set()
+            if not cat:
+                log["Estado_Audit"], log["Motivo"] = "Descartado", "Sin Keyword Relevante"
+                audit_logs.append(log)
+                continue
             
-            for item in summaries:
-                code = item.get('CodigoExterno')
-                if code in ignored:
-                    audit_logs.append({"ID": code, "Estado_Audit": "Ignorado", "Motivo": "Lista Negra"})
-                    continue
-                
-                name = str(item.get('Nombre', ''))
-                matched = False
-                for cat in search_cats:
-                    kws = SMART_CATEGORIES[cat]
-                    is_match, kw = matches_keywords(name, kws)
-                    if is_match:
-                        candidates.append({
-                            'CodigoExterno': code,
-                            'Nombre': name,
-                            '_cat': cat,
-                            '_kw': kw
-                        })
-                        audit_logs.append({"ID": code, "Estado_Audit": "Candidato", "Motivo": f"{cat}:{kw}"})
-                        matched = True
-                        break
-                
-                if not matched:
-                    audit_logs.append({"ID": code, "Estado_Audit": "No Match", "Motivo": "Sin palabras clave"})
-            
-            st.info(f"🎯 {len(candidates)} candidatos encontrados")
-            
-            # OPTIMIZATION 3: Smart prioritization - only fetch details for top candidates
-            # Sort candidates by likely relevance based on name
-            def quick_score(name):
-                score = 0
-                name_lower = name.lower()
-                for word, pts in SCORING_RULES.items():
-                    if word in name_lower:
-                        score += pts
-                return score
-            
-            candidates_scored = [(c, quick_score(c['Nombre'])) for c in candidates]
-            candidates_scored.sort(key=lambda x: x[1], reverse=True)
-            
-            # OPTIMIZATION 4: Limit detail fetching to top N results
-            MAX_DETAILS_TO_FETCH = 200  # Configurable limit
-            if len(candidates_scored) > MAX_DETAILS_TO_FETCH:
-                st.warning(f"⚠️ Limitando a los {MAX_DETAILS_TO_FETCH} candidatos más relevantes de {len(candidates_scored)} totales")
-                candidates = [c for c, _ in candidates_scored[:MAX_DETAILS_TO_FETCH]]
+            d_sum = parse_date(item.get('FechaCierre'))
+            if show_closed or (d_sum is None) or (d_sum >= datetime.now()):
+                item['_cat'], item['_kw'] = cat, kw
+                candidates.append(item)
+                log["Estado_Audit"] = "Candidato"
             else:
-                candidates = [c for c, _ in candidates_scored]
+                log["Estado_Audit"], log["Motivo"] = "Descartado", f"Vencida ({d_sum})"
+            audit_logs.append(log)
+
+        # 2. Cache Check
+        all_candidate_codes = [c['CodigoExterno'] for c in candidates]
+        cached_map = get_cached_details(all_candidate_codes)
+        
+        for c in all_candidate_codes:
+            if c not in cached_map:
+                codes_needed_for_api.append(c)
+
+        # 3. OPTIMIZED: Parallel Fetching in Batches
+        if codes_needed_for_api:
+            st.info(f"Descargando {len(codes_needed_for_api)} detalles...")
+            pbar = st.progress(0)
+            results_fetched = 0
             
-            # 3. Fetch details with caching
-            all_candidate_codes = [c['CodigoExterno'] for c in candidates]
-            cached_map = get_cached_details(all_candidate_codes)
-            codes_needed_for_api = [c for c in all_candidate_codes if c not in cached_map]
+            # Process in batches for better control
+            for batch_start in range(0, len(codes_needed_for_api), DETAIL_BATCH_SIZE):
+                batch_codes = codes_needed_for_api[batch_start:batch_start + DETAIL_BATCH_SIZE]
+                tasks = [(code, ticket) for code in batch_codes]
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    future_to_code = {executor.submit(fetch_detail_worker, task): task[0] for task in tasks}
+                    for future in concurrent.futures.as_completed(future_to_code):
+                        code_done, detail_data = future.result()
+                        results_fetched += 1
+                        if detail_data:
+                            save_cache(code_done, detail_data)
+                            cached_map[code_done] = json.dumps(detail_data)
+                        pbar.progress(results_fetched / len(codes_needed_for_api))
+            pbar.empty()
+        
+        # 4. Final Processing
+        final_list = []
+        for cand in candidates:
+            code = cand['CodigoExterno']
+            detail = None
+            if code in cached_map:
+                try: detail = json.loads(cached_map[code])
+                except: pass
             
-            # OPTIMIZATION 5: Batched fetching with progress
-            if codes_needed_for_api:
-                st.info(f"📡 Descargando {len(codes_needed_for_api)} detalles faltantes...")
-                pbar = st.progress(0)
+            if detail:
+                d_cierre = parse_date(detail.get('Fechas', {}).get('FechaCierre'))
+                is_valid = False
+                if show_closed: is_valid = True
+                elif d_cierre and d_cierre >= datetime.now(): is_valid = True
                 
-                # Process in batches
-                for batch_start in range(0, len(codes_needed_for_api), DETAIL_BATCH_SIZE):
-                    batch_codes = codes_needed_for_api[batch_start:batch_start + DETAIL_BATCH_SIZE]
-                    tasks = [(code, ticket) for code in batch_codes]
+                if is_valid:
+                    row = {
+                        "CodigoExterno": code,
+                        "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
+                        "Nombre": str(detail.get('Nombre','')).title(),
+                        "Organismo": str(detail.get('Comprador',{}).get('NombreOrganismo','')).title(),
+                        "Unidad": str(detail.get('Comprador',{}).get('NombreUnidad','')).title(),
+                        "FechaPublicacion": parse_date(detail.get('Fechas',{}).get('FechaPublicacion')),
+                        "FechaCierre": d_cierre,
+                        "Descripcion": detail.get('Descripcion',''),
+                        "Categoría": cand['_cat'],
+                        "Palabra Clave": cand['_kw'],
+                        "EstadoTiempo": "🟢 Vigente" if (d_cierre and d_cierre >= datetime.now()) else "🔴 Cerrada"
+                    }
+                    if not d_cierre: row["EstadoTiempo"] = "⚠️ Sin Fecha"
+                    final_list.append(row)
                     
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                        future_to_code = {executor.submit(fetch_detail_worker, task): task[0] for task in tasks}
-                        for future in concurrent.futures.as_completed(future_to_code):
-                            code_done, detail_data = future.result()
-                            if detail_data:
-                                save_cache(code_done, detail_data)
-                                cached_map[code_done] = json.dumps(detail_data)
-                    
-                    # Update progress
-                    progress = min(1.0, (batch_start + len(batch_codes)) / len(codes_needed_for_api))
-                    pbar.progress(progress)
-                    
-                    # Rate limiting between batches
-                    if batch_start + DETAIL_BATCH_SIZE < len(codes_needed_for_api):
-                        time.sleep(REQUEST_DELAY * 2)  # Extra delay between batches
-                
-                pbar.empty()
-            
-            # 4. Final Processing
-            final_list = []
-            for cand in candidates:
-                code = cand['CodigoExterno']
-                detail = None
-                if code in cached_map:
-                    try: detail = json.loads(cached_map[code])
-                    except: pass
-                
-                if detail:
-                    d_cierre = parse_date(detail.get('Fechas', {}).get('FechaCierre'))
-                    is_valid = False
-                    if show_closed: is_valid = True
-                    elif d_cierre and d_cierre >= datetime.now(): is_valid = True
-                    
-                    if is_valid:
-                        row = {
-                            "CodigoExterno": code,
-                            "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                            "Nombre": str(detail.get('Nombre','')).title(),
-                            "Organismo": str(detail.get('Comprador',{}).get('NombreOrganismo','')).title(),
-                            "Unidad": str(detail.get('Comprador',{}).get('NombreUnidad','')).title(),
-                            "FechaPublicacion": parse_date(detail.get('Fechas',{}).get('FechaPublicacion')),
-                            "FechaCierre": d_cierre,
-                            "Descripcion": detail.get('Descripcion',''),
-                            "Categoría": cand['_cat'],
-                            "Palabra Clave": cand['_kw'],
-                            "EstadoTiempo": "🟢 Vigente" if (d_cierre and d_cierre >= datetime.now()) else "🔴 Cerrada"
-                        }
-                        if not d_cierre: row["EstadoTiempo"] = "⚠️ Sin Fecha"
-                        final_list.append(row)
-                        
-                        for l in audit_logs:
-                            if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "VISIBLE", "OK"
-                    else:
-                         for l in audit_logs:
-                            if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "Descartado", "Vencida (Detalle)"
+                    for l in audit_logs:
+                        if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "VISIBLE", "OK"
                 else:
                      for l in audit_logs:
-                         if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "Error API", "Fallo descarga"
+                        if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "Descartado", "Vencida (Detalle)"
+            else:
+                 for l in audit_logs:
+                     if l['ID'] == code: l['Estado_Audit'], l['Motivo'] = "Error API", "Fallo descarga"
 
-            if final_list:
-                scores = calculate_relevance_heuristic(final_list)
-                for i, row in enumerate(final_list):
-                    row['Similitud'] = scores[i] 
+        if final_list:
+            scores = calculate_relevance_heuristic(final_list)
+            for i, row in enumerate(final_list):
+                row['Similitud'] = scores[i] 
 
-            st.session_state.search_results = pd.DataFrame(final_list)
-            st.session_state.audit_data = pd.DataFrame(audit_logs)
-            st.session_state.page_number = 1
-            st.success(f"✅ Búsqueda completada: {len(final_list)} resultados")
+        st.session_state.search_results = pd.DataFrame(final_list)
+        st.session_state.audit_data = pd.DataFrame(audit_logs)
+        st.session_state.page_number = 1
 
     # RENDERING (Same as original)
     with t_res:
@@ -559,8 +574,8 @@ def main():
         else: st.info("No hay guardados")
 
     with st.sidebar:
-        st.success("✅ IDIEM Smart Core - OPTIMIZADO")
-        st.caption("✨ Con cache inteligente y rate limiting")
+        st.success("✅ IDIEM Smart Core Activo (Fast Mode - Optimizado)")
+        st.caption("🚀 Cache inteligente + Fetching paralelo")
         st.divider()
         
         # Show cache stats
@@ -573,8 +588,9 @@ def main():
             detail_cache = c.fetchone()[0]
             conn.close()
             
-            st.metric("Días en cache", summary_cache)
-            st.metric("Detalles en cache", detail_cache)
+            if summary_cache > 0 or detail_cache > 0:
+                st.metric("Días en cache", summary_cache)
+                st.metric("Detalles en cache", detail_cache)
         except:
             pass
         
