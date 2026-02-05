@@ -7,15 +7,14 @@ import re
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_icon="🏗️")
 
-# UTM Value (Feb 2026 approx or current)
+# UTM Value (Feb 2026 approx)
 UTM_VALUE = 69611 
 
-# Custom CSS for spacing and simple styling
+# Custom CSS
 st.markdown("""
     <style>
         .block-container { padding-top: 1rem; padding-bottom: 2rem; }
         .stDataFrame { border: 1px solid #f0f2f6; border-radius: 8px; }
-        /* Make tabs look cleaner */
         .stTabs [data-baseweb="tab-list"] { gap: 20px; }
         .stTabs [data-baseweb="tab"] { height: 45px; border-radius: 4px 4px 0 0; }
         .stTabs [aria-selected="true"] { border-top: 3px solid #ff4b4b; }
@@ -125,21 +124,23 @@ def load_data(json_path):
                     is_estimated = True
                     monto_desc = desc
         
+        # --- URL FIX ---
+        # Force the correct Procurement URL pattern
+        fixed_url = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={code}"
+
         # --- BUILD ROW ---
-        # Note: We prepare columns specifically for st.column_config
         row = {
             "Codigo": code,
             "Nombre": item.get("Nombre", ""),
             "Organismo": item.get("Comprador", {}).get("NombreOrganismo", ""),
             "Monto": monto_final,
-            # We use an icon path or emoji for the status column
-            "Tipo_Valor": "🔵" if is_estimated else None, 
+            "Es_Estimado": is_estimated, # Hidden flag for styling
             "Monto_Detalle": monto_desc,
             "Publicacion": item.get("Fechas", {}).get("FechaPublicacion", "")[:10] if item.get("Fechas") else "",
             "Cierre": item.get("Fechas", {}).get("FechaCierre", "")[:10] if item.get("Fechas") else "",
             "Categoría": item.get("Match_Category", "-"),
             "Keyword": item.get("Match_Keyword", "-"),
-            "URL_Ficha": item.get("URL_Publica"),
+            "URL_Ficha": fixed_url,
             "Descripcion": item.get("Descripcion", "")
         }
         rows.append(row)
@@ -159,7 +160,7 @@ with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/121px-Python-logo-notext.svg.png", width=40)
     st.title("Panel de Control")
     st.metric("Licitaciones", len(df))
-    st.metric("Valor UTM", f"${UTM_VALUE:,.0f}")
+    st.metric("Valor UTM", f"${UTM_VALUE:,.0f}".replace(",", "."))
     
     if st.button("🔄 Recargar", use_container_width=True):
         st.cache_data.clear()
@@ -176,21 +177,20 @@ st.title("🏗️ Monitor Licitaciones IDIEM")
 
 tab_list, tab_detail = st.tabs(["📋 Listado General", "📄 Ficha Técnica"])
 
-# --- TAB 1: MODERN TABLE ---
+# --- TAB 1: TABLE ---
 with tab_list:
     if not df.empty:
-        # Note aligned to right
+        # Note
         _, c_note = st.columns([2, 3])
         with c_note:
             st.markdown(
                 """<div style="text-align: right; font-size: 0.85em; color: #666; margin-bottom: 5px;">
-                Nota: El ícono 🔵 indica que el <b>Monto</b> es una estimación basada en rango UTM.
+                Nota: Los montos en <span style="color:#1E90FF; font-weight:bold">azul</span> son estimaciones basadas en rango UTM.
                 </div>""", 
                 unsafe_allow_html=True
             )
 
-        # Prepare DataFrame for Display
-        # We assume specific column order
+        # 1. Select and Order Columns
         cols_order = [
             "Codigo", 
             "URL_Ficha", 
@@ -200,16 +200,26 @@ with tab_list:
             "Categoría", 
             "Keyword", 
             "Organismo", 
-            "Tipo_Valor", # The Icon Column
-            "Monto"
+            "Monto",
+            "Es_Estimado" # Needed for styling, will hide in config
         ]
         
-        # Filter existing columns
         df_display = df[[c for c in cols_order if c in df.columns]].copy()
 
-        # CONFIGURATION for st.dataframe
+        # 2. Apply Pandas Styler for Conditional Formatting
+        def style_monto(row):
+            # If Es_Estimado is True, return blue color for Monto column
+            color = '#1E90FF' if row['Es_Estimado'] else 'inherit'
+            weight = 'bold' if row['Es_Estimado'] else 'normal'
+            return [f'color: {color}; font-weight: {weight}' if col == 'Monto' else '' for col in row.index]
+
+        # Apply style and number format (Chilean style: dots)
+        styler = df_display.style.apply(style_monto, axis=1)
+        styler.format({"Monto": lambda x: f"$ {x:,.0f}".replace(",", ".")})
+
+        # 3. Column Configuration (For Links and Widths)
         column_config = {
-            "Codigo": st.column_config.TextColumn("ID", width="small", help="Código Externo"),
+            "Codigo": st.column_config.TextColumn("ID", width="small"),
             "URL_Ficha": st.column_config.LinkColumn("Web", display_text="🔗", width="small"),
             "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
             "Publicacion": st.column_config.DateColumn("Publicación", format="DD/MM/YYYY"),
@@ -217,31 +227,24 @@ with tab_list:
             "Categoría": st.column_config.TextColumn("Categoría", width="medium"),
             "Keyword": st.column_config.TextColumn("Match", width="small"),
             "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
-            "Tipo_Valor": st.column_config.TextColumn("Est.", width="small", help="🔵 = Estimado por rango UTM"),
-            "Monto": st.column_config.NumberColumn(
-                "Monto (CLP)", 
-                format="$%d", 
-                width="medium"
-            )
+            "Monto": st.column_config.Column("Monto (CLP)", width="medium"), # Basic config, Styler handles format
+            "Es_Estimado": None # Hide this column
         }
 
-        # RENDER TABLE
-        # on_select="rerun" enables the interactive selection
+        # 4. Render Dataframe
         event = st.dataframe(
-            df_display,
+            styler, # Pass the styled object
             column_config=column_config,
             use_container_width=True,
             hide_index=True,
             on_select="rerun", 
             selection_mode="single-row",
-            height=600
+            height=700 
         )
 
-        # SELECTION LOGIC
+        # Selection Logic
         if event.selection.rows:
-            # Get the index of the selected row
             idx = event.selection.rows[0]
-            # Retrieve the Code from the displayed dataframe
             code = df_display.iloc[idx]["Codigo"]
             
             if st.session_state.selected_code != code:
@@ -303,7 +306,6 @@ with tab_detail:
         
         with col_b:
             st.markdown("###### 💰 Negocio")
-            # Logic to explain the amount shown
             m_api = data.get('MontoEstimado')
             m_scrap = sec1.get("Presupuesto") if sec1 else None
             
@@ -325,7 +327,7 @@ with tab_detail:
         st.markdown("##### 📝 Descripción")
         st.info(data.get('Descripcion', 'Sin descripción'))
 
-        # --- ITEMS TABLE (Native Streamlit) ---
+        # --- ITEMS TABLE ---
         st.divider()
         st.markdown("###### 📦 Ítems")
         items_list = data.get('Items', {}).get('Listado', [])
