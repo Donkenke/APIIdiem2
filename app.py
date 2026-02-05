@@ -127,15 +127,23 @@ def load_data(json_path):
         # --- URL FIX ---
         fixed_url = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={code}"
 
+        # --- DATE SAFE EXTRACTION (THE FIX) ---
+        # We assume 'Fechas' exists, but if 'FechaCierre' is None, str() handles it safely.
+        fechas = item.get("Fechas") or {}
+        
+        # Logic: Get value -> If None, become "" -> Slice first 10 chars
+        f_pub = str(fechas.get("FechaPublicacion") or "")[:10]
+        f_cierre = str(fechas.get("FechaCierre") or "")[:10]
+
         row = {
             "Codigo": code,
             "Nombre": item.get("Nombre", ""),
             "Organismo": item.get("Comprador", {}).get("NombreOrganismo", ""),
-            "Monto": monto_final, # Keep float for sorting
+            "Monto": monto_final, 
             "Es_Estimado": is_estimated, 
             "Monto_Detalle": monto_desc,
-            "Publicacion": item.get("Fechas", {}).get("FechaPublicacion", "")[:10] if item.get("Fechas") else "",
-            "Cierre": item.get("Fechas", {}).get("FechaCierre", "")[:10] if item.get("Fechas") else "",
+            "Publicacion": f_pub,
+            "Cierre": f_cierre,
             "Categoría": item.get("Match_Category", "-"),
             "Keyword": item.get("Match_Keyword", "-"),
             "URL_Ficha": fixed_url,
@@ -190,16 +198,14 @@ with tab_list:
 
         # 1. Select Columns
         cols_order = [
-            "URL_Ficha", 
             "Codigo", 
-            
+            "URL_Ficha", 
             "Nombre", 
-            "Organismo", 
             "Publicacion", 
             "Cierre", 
             "Categoría", 
             "Keyword", 
-            
+            "Organismo", 
             "Monto",
             "Es_Estimado"
         ]
@@ -207,25 +213,16 @@ with tab_list:
         df_display = df[[c for c in cols_order if c in df.columns]].copy()
 
         # 2. CREATE PANDAS STYLER
-        # This allows logic per row/cell
         def color_logic(row):
-            # Default style
             styles = ['' for _ in row.index]
-            
-            # Logic: If 'Es_Estimado' is True, color the 'Monto' column Blue & Bold
             if row['Es_Estimado']:
-                # Find index of 'Monto'
                 if 'Monto' in row.index:
                     monto_idx = row.index.get_loc('Monto')
                     styles[monto_idx] = 'color: #1E90FF; font-weight: bold;'
-            
             return styles
 
-        # Apply logic to rows (axis=1)
         styler = df_display.style.apply(color_logic, axis=1)
 
-        # Apply Chilean Format (Dots for thousands) to Monto
-        # This keeps the column sortable by value, but displays nicely
         styler.format({
             "Monto": lambda x: f"$ {x:,.0f}".replace(",", ".") if x > 0 else "-"
         })
@@ -240,8 +237,8 @@ with tab_list:
             "Categoría": st.column_config.TextColumn("Categoría", width="medium"),
             "Keyword": st.column_config.TextColumn("Match", width="small"),
             "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
-            "Monto": st.column_config.Column("Monto (CLP)", width="medium"), # Styler handles display
-            "Es_Estimado": None # Hide
+            "Monto": st.column_config.Column("Monto (CLP)", width="medium"), 
+            "Es_Estimado": None 
         }
 
         # 4. RENDER
@@ -328,8 +325,11 @@ with tab_detail:
                      st.caption(f"({desc})")
                  else:
                      st.write("**Monto:** No informado")
-
-            st.write(f"**Cierre:** {data.get('Fechas', {}).get('FechaCierre', '')[:10]}")
+            
+            # SAFE DATE EXTRACTION FOR DETAIL VIEW
+            fechas = data.get("Fechas") or {}
+            cierre_detail = str(fechas.get("FechaCierre") or "")[:10]
+            st.write(f"**Cierre:** {cierre_detail}")
 
         st.divider()
         st.markdown("##### 📝 Descripción")
