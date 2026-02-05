@@ -21,7 +21,7 @@ DB_FILE = "licitaciones_v9.db"
 ITEMS_PER_LOAD = 50 
 MAX_WORKERS = 5 
 
-# --- KEYWORD LOGIC DEFINITIONS ---
+# --- KEYWORD LOGIC DEFINITIONS (SMART SEARCH) ---
 
 # 1. STRICT ACRONYMS (Exact Word Match):
 # Uses regex word boundaries (\b). "ATO" will match "El ATO visitó" but NOT "CONTRATO".
@@ -71,7 +71,9 @@ STANDARD_PHRASES = {
     "Sustentabilidad y Medio Ambiente": [
         "Huella Carbono", "Cambio climático", "Gases Efecto Invernadero", 
         "Estrategia Climática", "Energética", "Sustentabilidad", "Sustentable", 
-        "Ruido Acústico", "Ruido Ambiental", "Riles", "Aguas Servidas"
+        "Ruido Acústico", "Ruido Ambiental", "Riles", "Aguas Servidas", 
+        "Actualización de la Estrategia Climática Nacional", "Actualización del NDC",
+        "Metodología de cálculo de huella de carbono"
     ],
     "Gestión de Contratos y Forense": [
         "Reclamaciones", "Revisión Contratos", "Revisión Ofertas", "Revisión Bases", 
@@ -130,7 +132,7 @@ for cat, phrases in STANDARD_PHRASES.items():
         COMPILED_PHRASES.append((pattern, cat, phrase))
 
 
-# --- DATABASE FUNCTIONS ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -158,6 +160,7 @@ def init_db():
     )''')
     conn.commit(); conn.close()
 
+# --- HELPERS ---
 def get_ignored_set():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -191,7 +194,6 @@ def ignore_tender(code):
 def save_tender(data):
     try:
         clean = data.copy()
-        # Remove UI control columns before saving
         for k in ['Guardar','Ignorar','MontoStr','EstadoTiempo','EsNuevo','Web','Seleccionar']: 
             clean.pop(k, None)
         conn = sqlite3.connect(DB_FILE)
@@ -214,7 +216,7 @@ def restore_tender(code):
     conn.execute("DELETE FROM ignorados WHERE codigo_externo = ?", (code,))
     conn.commit(); conn.close()
 
-# --- API HELPERS ---
+# --- API ---
 def get_api_session():
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"})
@@ -290,7 +292,7 @@ def format_clp(v):
     try: return "${:,.0f}".format(float(v)).replace(",", ".")
     except: return "$0"
 
-# --- SMART SEARCH LOGIC ---
+# --- NEW SMART SEARCH FUNCTION ---
 def get_cat(txt):
     if not txt: return None, None
     
@@ -315,15 +317,10 @@ def get_cat(txt):
 
     return None, None
 
-# --- MAIN APP ---
+# --- MAIN ---
 def main():
     init_db()
     
-    # Lazy Initialization: Create session state but don't load data yet
-    if 'search_results' not in st.session_state:
-        st.session_state.search_results = pd.DataFrame()
-    if 'audit_data' not in st.session_state:
-        st.session_state.audit_data = pd.DataFrame()
     if 'visible_rows' not in st.session_state:
         st.session_state.visible_rows = ITEMS_PER_LOAD
 
@@ -337,123 +334,124 @@ def main():
     
     with c_date:
         today = datetime.now()
-        dr = st.date_input("Rango de Consulta", (today - timedelta(days=7), today), max_value=today, format="DD/MM/YYYY")
+        # CHANGED: Default is now 3 days to prevent hanging
+        dr = st.date_input("Rango de Consulta", (today - timedelta(days=3), today), max_value=today, format="DD/MM/YYYY")
 
     with c_btn:
         st.write("") 
         st.write("") 
-        # Button trigger prevents hanging on load
         do_search = st.button("🔍 Buscar Datos", use_container_width=True)
+
+    if do_search:
+        st.cache_data.clear()
+        if 'search_results' in st.session_state: del st.session_state['search_results']
+        st.session_state.visible_rows = ITEMS_PER_LOAD
+        st.rerun()
 
     t_res, t_sav, t_audit = st.tabs(["🔍 Resultados",  "💾 Guardados", " Auditoría",])
 
-    # --- SEARCH LOGIC (Triggered only by button) ---
-    if do_search:
-        st.session_state.visible_rows = ITEMS_PER_LOAD # Reset pagination
-        
+    # --- LOGIC (AUTO-LOAD PRESERVED) ---
+    if 'search_results' not in st.session_state:
         if isinstance(dr, tuple): start, end = dr[0], dr[1] if len(dr)>1 else dr[0]
         else: start = end = dr
         
-        with st.spinner(f"Descargando datos del {start.strftime('%d/%m')} al {end.strftime('%d/%m')}..."):
-            # 1. Fetch Summaries
+        with st.spinner("Descargando resúmenes..."):
             raw_items, fetch_errors = fetch_summaries_raw(start, end, ticket)
-            
-            if fetch_errors: st.warning(f"Errores conexión: {len(fetch_errors)}")
+        
+        if fetch_errors: st.warning(f"Errores conexión: {len(fetch_errors)}")
 
-            # 2. Process Keywords
-            audit_logs = []
-            candidates = []
-            ignored = get_ignored_set()
-            seen = get_seen_set()
-            new_seen_ids = []
-            
-            for item in raw_items:
-                code = item.get('CodigoExterno')
-                if code in ignored:
-                    audit_logs.append({"ID": code, "Estado": "Ignorado"})
-                    continue
+        audit_logs = []
+        candidates = []
+        ignored = get_ignored_set()
+        seen = get_seen_set()
+        new_seen_ids = []
+        
+        for item in raw_items:
+            code = item.get('CodigoExterno')
+            if code in ignored:
+                audit_logs.append({"ID": code, "Estado": "Ignorado"})
+                continue
 
-                full_txt = f"{item.get('Nombre','')} {item.get('Descripcion','')}"
-                cat, kw = get_cat(full_txt)
+            full_txt = f"{item.get('Nombre','')} {item.get('Descripcion','')}"
+            cat, kw = get_cat(full_txt)
+            
+            if cat:
+                is_new = False
+                if code not in seen:
+                    is_new = True
+                    new_seen_ids.append(code)
                 
-                if cat:
-                    is_new = False
-                    if code not in seen:
-                        is_new = True
-                        new_seen_ids.append(code)
+                item['_cat'], item['_kw'], item['_is_new'] = cat, kw, is_new
+                candidates.append(item)
+                audit_logs.append({"ID": code, "Estado": "Candidato"})
+            else:
+                audit_logs.append({"ID": code, "Estado": "No Keyword"})
+
+        mark_as_seen(new_seen_ids)
+
+        # Fetch Details
+        cached = get_cached_details([c['CodigoExterno'] for c in candidates])
+        to_fetch = [c['CodigoExterno'] for c in candidates if c['CodigoExterno'] not in cached]
+        
+        # --- PROGRESS BAR ---
+        if to_fetch:
+            progress_bar = st.progress(0, text="Iniciando descarga de detalles...")
+            total_items = len(to_fetch)
+            completed_items = 0
+            
+            tasks = [(code, ticket) for code in to_fetch]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
+                future_to_code = {exe.submit(fetch_detail_worker, t): t[0] for t in tasks}
+                for future in concurrent.futures.as_completed(future_to_code):
+                    c_code, c_data = future.result()
+                    if c_data:
+                        save_cache(c_code, c_data)
+                        cached[c_code] = json.dumps(c_data)
                     
-                    item['_cat'], item['_kw'], item['_is_new'] = cat, kw, is_new
-                    candidates.append(item)
-                    audit_logs.append({"ID": code, "Estado": "Candidato"})
-                else:
-                    audit_logs.append({"ID": code, "Estado": "No Keyword"})
-
-            mark_as_seen(new_seen_ids)
-
-            # 3. Fetch Details
-            cached = get_cached_details([c['CodigoExterno'] for c in candidates])
-            to_fetch = [c['CodigoExterno'] for c in candidates if c['CodigoExterno'] not in cached]
+                    completed_items += 1
+                    progress_percentage = min(completed_items / total_items, 1.0)
+                    progress_bar.progress(progress_percentage, text=f"Descargando {completed_items}/{total_items} detalles...")
             
-            if to_fetch:
-                progress_bar = st.progress(0, text="Iniciando descarga de detalles...")
-                total_items = len(to_fetch)
-                completed_items = 0
-                
-                tasks = [(code, ticket) for code in to_fetch]
-                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
-                    future_to_code = {exe.submit(fetch_detail_worker, t): t[0] for t in tasks}
-                    for future in concurrent.futures.as_completed(future_to_code):
-                        c_code, c_data = future.result()
-                        if c_data:
-                            save_cache(c_code, c_data)
-                            cached[c_code] = json.dumps(c_data)
-                        
-                        completed_items += 1
-                        progress_percentage = min(completed_items / total_items, 1.0)
-                        progress_bar.progress(progress_percentage, text=f"Descargando {completed_items}/{total_items} detalles...")
-                
-                progress_bar.empty()
+            progress_bar.empty()
 
-            # 4. Build Final Dataframe
-            final = []
-            for cand in candidates:
-                code = cand['CodigoExterno']
-                det = json.loads(cached.get(code, "{}")) if code in cached else {}
-                
-                d_cierre = parse_date(det.get('Fechas', {}).get('FechaCierre'))
-                if d_cierre and d_cierre < datetime.now(): continue 
+        final = []
+        for cand in candidates:
+            code = cand['CodigoExterno']
+            det = json.loads(cached.get(code, "{}")) if code in cached else {}
+            
+            d_cierre = parse_date(det.get('Fechas', {}).get('FechaCierre'))
+            if d_cierre and d_cierre < datetime.now(): continue 
 
-                final.append({
-                    "CodigoExterno": code,
-                    "Web": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                    "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                    "Nombre": det.get('Nombre','').title(),
-                    "Organismo": det.get('Comprador',{}).get('NombreOrganismo','').title(),
-                    "FechaPublicacion": parse_date(det.get('Fechas',{}).get('FechaPublicacion')),
-                    "FechaCierre": d_cierre,
-                    "MontoStr": format_clp(det.get('MontoEstimado',0)),
-                    "Descripcion": det.get('Descripcion',''),
-                    "Categoría": cand['_cat'],
-                    "Palabra Clave": cand['_kw'],
-                    "EsNuevo": cand['_is_new'],
-                    "Guardar": False,
-                    "Ignorar": False
-                })
-            
-            st.session_state.search_results = pd.DataFrame(final)
-            st.session_state.audit_data = pd.DataFrame(audit_logs)
-            
-            # --- HOTFIX: Force UI Columns to exist immediately ---
-            if not st.session_state.search_results.empty:
-                for col in ["Guardar", "Ignorar", "Seleccionar"]:
-                    if col not in st.session_state.search_results.columns:
-                        st.session_state.search_results[col] = False
+            final.append({
+                "CodigoExterno": code,
+                "Web": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
+                "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
+                "Nombre": det.get('Nombre','').title(),
+                "Organismo": det.get('Comprador',{}).get('NombreOrganismo','').title(),
+                "FechaPublicacion": parse_date(det.get('Fechas',{}).get('FechaPublicacion')),
+                "FechaCierre": d_cierre,
+                "MontoStr": format_clp(det.get('MontoEstimado',0)),
+                "Descripcion": det.get('Descripcion',''),
+                "Categoría": cand['_cat'],
+                "Palabra Clave": cand['_kw'],
+                "EsNuevo": cand['_is_new'],
+                "Guardar": False,
+                "Ignorar": False
+            })
+        
+        st.session_state.search_results = pd.DataFrame(final)
+        st.session_state.audit_data = pd.DataFrame(audit_logs)
+        
+        # --- SAFETY FIX: Ensure Columns Exist Immediately ---
+        # This prevents KeyError if the app loads empty or stale data
+        if not st.session_state.search_results.empty:
+             for col in ["Guardar", "Ignorar", "Seleccionar"]:
+                if col not in st.session_state.search_results.columns:
+                    st.session_state.search_results[col] = False
 
     # --- TAB RESULTADOS ---
     with t_res:
-        if st.session_state.search_results.empty:
-            st.info("Presiona '🔍 Buscar Datos' para comenzar.")
-        else:
+        if 'search_results' in st.session_state and not st.session_state.search_results.empty:
             df = st.session_state.search_results.copy()
             df = df.sort_values("FechaPublicacion", ascending=False)
 
@@ -470,7 +468,8 @@ def main():
             visible = st.session_state.visible_rows
             df_visible = df.iloc[:visible]
 
-            # Ensure 'Seleccionar' exists
+            # --- WORKAROUND FOR SELECTION ---
+            # data_editor does not support on_select. We use a checkbox column "Seleccionar" instead.
             if "Seleccionar" not in df_visible.columns:
                 df_visible.insert(0, "Seleccionar", False)
 
@@ -497,9 +496,11 @@ def main():
                 key="editor_main"
             )
 
-            # --- SELECTION TRIGGER ---
+            # --- SIDEBAR TRIGGER LOGIC ---
+            # Detect row where "Seleccionar" is Checked
             sel_rows = edited_df[edited_df["Seleccionar"] == True]
             if not sel_rows.empty:
+                # Get the first selected row (simulating single selection)
                 idx = sel_rows.index[0] 
                 st.session_state['selected_tender'] = sel_rows.loc[idx].to_dict()
 
@@ -507,6 +508,7 @@ def main():
             c_btn1, c_btn2, c_more = st.columns([1, 1, 3])
             
             with c_btn1:
+                # Safety check for column existence
                 if "Guardar" in edited_df.columns:
                     to_save = edited_df[edited_df["Guardar"]]
                     if not to_save.empty:
@@ -518,6 +520,7 @@ def main():
                             time.sleep(1); st.rerun()
 
             with c_btn2:
+                # Safety check for column existence
                 if "Ignorar" in edited_df.columns:
                     to_ignore = edited_df[edited_df["Ignorar"]]
                     if not to_ignore.empty:
@@ -525,6 +528,7 @@ def main():
                             for _, row in to_ignore.iterrows():
                                 ignore_tender(row['CodigoExterno'])
                             st.toast(f"{len(to_ignore)} eliminados.", icon="🗑️")
+                            st.cache_data.clear(); del st.session_state['search_results']
                             st.rerun()
 
             with c_more:
@@ -532,8 +536,10 @@ def main():
                     if st.button("⬇️ Cargar más resultados...", use_container_width=True):
                         st.session_state.visible_rows += ITEMS_PER_LOAD
                         st.rerun()
+        else:
+            st.info("Sin resultados.")
 
-    # --- SIDEBAR DETAILS ---
+    # --- SIDEBAR ---
     with st.sidebar:
         st.header("📋 Detalle")
         if 'selected_tender' in st.session_state:
