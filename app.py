@@ -190,14 +190,16 @@ with tab_list:
 
         # 1. Select Columns
         cols_order = [
-            "Codigo", 
             "URL_Ficha", 
+            "Codigo", 
+            
             "Nombre", 
+            "Organismo", 
             "Publicacion", 
             "Cierre", 
             "Categoría", 
             "Keyword", 
-            "Organismo", 
+            
             "Monto",
             "Es_Estimado"
         ]
