@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import os
 import re
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_icon="🏗️")
@@ -11,14 +10,15 @@ st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_
 # UTM Value (Feb 2026 approx or current)
 UTM_VALUE = 69611 
 
-# Custom CSS
+# Custom CSS for spacing and simple styling
 st.markdown("""
     <style>
         .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-        .stDataFrame { border: 1px solid #e0e0e0; border-radius: 5px; }
-        .stTabs [data-baseweb="tab-list"] { gap: 24px; }
-        .stTabs [data-baseweb="tab"] { height: 50px; background-color: #f0f2f6; border-radius: 4px 4px 0 0; }
-        .stTabs [aria-selected="true"] { background-color: #ffffff; border-top: 2px solid #ff4b4b; }
+        .stDataFrame { border: 1px solid #f0f2f6; border-radius: 8px; }
+        /* Make tabs look cleaner */
+        .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+        .stTabs [data-baseweb="tab"] { height: 45px; border-radius: 4px 4px 0 0; }
+        .stTabs [aria-selected="true"] { border-top: 3px solid #ff4b4b; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -30,26 +30,16 @@ if 'selected_code' not in st.session_state:
 # ==========================================
 
 def clean_money_string(text):
-    """
-    Cleans strings like '180.677.462' or '$ 500' into a float.
-    """
     if not text: return 0
     try:
-        # Remove everything except digits
         clean = re.sub(r'[^\d]', '', str(text))
-        if clean:
-            return float(clean)
+        if clean: return float(clean)
     except: pass
     return 0
 
 def estimate_monto_from_text(text):
-    """
-    Parses strings like "igual o superior a 100 UTM e inferior a 1.000 UTM"
-    Returns: (Estimated Amount in CLP, Description)
-    """
-    if not text:
-        return 0, "No informado"
-
+    if not text: return 0, "No informado"
+    
     matches = re.findall(r'(\d[\d\.]*)', text)
     numbers = []
     for m in matches:
@@ -59,30 +49,24 @@ def estimate_monto_from_text(text):
         except: pass
     
     numbers = sorted(numbers)
-    min_utm = 0
-    max_utm = 0
+    min_utm, max_utm = 0, 0
     text_lower = text.lower()
     
     if len(numbers) >= 2:
-        min_utm = numbers[0]
-        max_utm = numbers[1]
+        min_utm, max_utm = numbers[0], numbers[1]
     elif len(numbers) == 1:
         val = numbers[0]
         if "inferior" in text_lower or "menor" in text_lower:
-            min_utm = 0
-            max_utm = val
+            min_utm, max_utm = 0, val
         elif "superior" in text_lower or "mayor" in text_lower:
-            min_utm = val
-            max_utm = val * 3 
+            min_utm, max_utm = val, val * 3 
         else:
-            min_utm = 0
-            max_utm = val
+            min_utm, max_utm = 0, val
     else:
         return 0, "Rango no detectado"
 
     avg_utm = (min_utm + max_utm) / 3
     estimated_clp = avg_utm * UTM_VALUE
-    
     return estimated_clp, f"Est. Rango {min_utm}-{max_utm} UTM"
 
 # ==========================================
@@ -102,12 +86,12 @@ def load_data(json_path):
     for item in data:
         code = item.get("CodigoExterno")
         
-        # --- MONTO PRIORITY LOGIC ---
+        # --- MONTO LOGIC ---
         monto_final = 0
         is_estimated = False
         monto_desc = "Monto Real (API)"
         
-        # 1. Try API "MontoEstimado"
+        # 1. API
         has_val = False
         api_monto = item.get("MontoEstimado")
         try:
@@ -118,25 +102,22 @@ def load_data(json_path):
                     has_val = True
         except: pass
         
-        # 2. Try Scraped "Presupuesto" (New MOP Field)
-        # This is considered a "Real" value, so is_estimated = False
+        # 2. Scraped Presupuesto
         if not has_val:
             ext_meta = item.get("ExtendedMetadata", {})
             sec1 = ext_meta.get("Section_1_Características", {})
             presupuesto_str = sec1.get("Presupuesto")
-            
             p_val = clean_money_string(presupuesto_str)
             if p_val > 0:
                 monto_final = p_val
                 has_val = True
                 monto_desc = "Presupuesto (Scraped)"
         
-        # 3. Try Estimation (Fallback)
+        # 3. Estimation
         if not has_val:
             ext_meta = item.get("ExtendedMetadata", {})
             sec1 = ext_meta.get("Section_1_Características", {})
             tipo_lic = sec1.get("Tipo de Licitación", "")
-            
             if tipo_lic:
                 est_val, desc = estimate_monto_from_text(tipo_lic)
                 if est_val > 0:
@@ -145,22 +126,22 @@ def load_data(json_path):
                     monto_desc = desc
         
         # --- BUILD ROW ---
+        # Note: We prepare columns specifically for st.column_config
         row = {
             "Codigo": code,
             "Nombre": item.get("Nombre", ""),
             "Organismo": item.get("Comprador", {}).get("NombreOrganismo", ""),
             "Monto": monto_final,
-            "Es_Estimado": is_estimated,
+            # We use an icon path or emoji for the status column
+            "Tipo_Valor": "🔵" if is_estimated else None, 
             "Monto_Detalle": monto_desc,
             "Publicacion": item.get("Fechas", {}).get("FechaPublicacion", "")[:10] if item.get("Fechas") else "",
             "Cierre": item.get("Fechas", {}).get("FechaCierre", "")[:10] if item.get("Fechas") else "",
-            "Categoría IDIEM": item.get("Match_Category", "-"),
+            "Categoría": item.get("Match_Category", "-"),
             "Keyword": item.get("Match_Keyword", "-"),
             "URL_Ficha": item.get("URL_Publica"),
-            "URL_Docs": item.get("URL_Documentos_Portal"),
             "Descripcion": item.get("Descripcion", "")
         }
-        
         rows.append(row)
         full_details_map[code] = item 
 
@@ -174,12 +155,11 @@ df, full_map = load_data(JSON_FILE)
 # 🖥️ UI LAYOUT
 # ==========================================
 
-# Sidebar
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/121px-Python-logo-notext.svg.png", width=40)
-    st.title("🎛️ Panel de Control")
+    st.title("Panel de Control")
     st.metric("Licitaciones", len(df))
-    st.metric("Valor UTM", f"${UTM_VALUE:,.0f}".replace(",", "."))
+    st.metric("Valor UTM", f"${UTM_VALUE:,.0f}")
     
     if st.button("🔄 Recargar", use_container_width=True):
         st.cache_data.clear()
@@ -187,107 +167,89 @@ with st.sidebar:
     
     st.divider()
     if st.session_state.selected_code:
-        st.info(f"Viendo: {st.session_state.selected_code}")
-        if st.button("🔙 Volver a Tabla"):
+        st.info(f"Selección: {st.session_state.selected_code}")
+        if st.button("Limpiar Selección", use_container_width=True):
             st.session_state.selected_code = None
             st.rerun()
 
 st.title("🏗️ Monitor Licitaciones IDIEM")
 
-tab_list, tab_detail = st.tabs(["✅ Licitaciones", "📄 Ficha Técnica"])
+tab_list, tab_detail = st.tabs(["📋 Listado General", "📄 Ficha Técnica"])
 
-# --- TAB 1: TABLE ---
+# --- TAB 1: MODERN TABLE ---
 with tab_list:
     if not df.empty:
-        df_display = df.copy()
-        df_display['Nombre_Display'] = df_display['Nombre'].apply(lambda x: x[:85] + '...' if len(x) > 85 else x)
-        
-        # --- SIMPLE NOTE (Right Aligned) ---
+        # Note aligned to right
         _, c_note = st.columns([2, 3])
         with c_note:
             st.markdown(
-                """<div style="text-align: right; font-size: 0.85em; color: #555; margin-bottom: 5px;">
-                Nota: Los valores en <span style="color:#1E90FF; font-weight:bold">azul</span> son estimación basadas en el intervalo de valor UTM definidos en la licitación
+                """<div style="text-align: right; font-size: 0.85em; color: #666; margin-bottom: 5px;">
+                Nota: El ícono 🔵 indica que el <b>Monto</b> es una estimación basada en rango UTM.
                 </div>""", 
                 unsafe_allow_html=True
             )
 
-        display_cols = [
-            'Codigo', 'URL_Ficha', 'Nombre_Display', 'Organismo','Publicacion', 'Cierre',
-            'Categoría IDIEM', 'Keyword', 'Monto',
-            'Nombre', 'Descripcion', 'Es_Estimado'
+        # Prepare DataFrame for Display
+        # We assume specific column order
+        cols_order = [
+            "Codigo", 
+            "URL_Ficha", 
+            "Nombre", 
+            "Publicacion", 
+            "Cierre", 
+            "Categoría", 
+            "Keyword", 
+            "Organismo", 
+            "Tipo_Valor", # The Icon Column
+            "Monto"
         ]
-        df_display = df_display[[c for c in display_cols if c in df_display.columns]]
+        
+        # Filter existing columns
+        df_display = df[[c for c in cols_order if c in df.columns]].copy()
 
-        gb = GridOptionsBuilder.from_dataframe(df_display)
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=100)
-        gb.configure_selection('single', use_checkbox=True)
-        
-        gb.configure_column("Codigo", header_name="ID", width=110, pinned="left")
-        
-        link_renderer = JsCode("""
-            class UrlCellRenderer {
-              init(params) {
-                this.eGui = document.createElement('a');
-                this.eGui.innerHTML = '🔗';
-                this.eGui.setAttribute('href', params.value);
-                this.eGui.setAttribute('target', '_blank');
-                this.eGui.style.textDecoration = 'none';
-                this.eGui.style.fontSize = '1.3em';
-                this.eGui.style.display = 'block';
-                this.eGui.style.textAlign = 'center';
-              }
-              getGui() { return this.eGui; }
-            }
-        """)
-        gb.configure_column("URL_Ficha", header_name="Web", cellRenderer=link_renderer, width=60, pinned="left")
-        
-        gb.configure_column("Nombre_Display", header_name="Nombre Licitación", width=400, tooltipField="Nombre")
-        gb.configure_column("Publicacion", width=110)
-        gb.configure_column("Cierre", width=110)
-        gb.configure_column("Categoría IDIEM", width=180)
-        gb.configure_column("Keyword", header_name="Match", width=150)
-        gb.configure_column("Organismo", width=200)
+        # CONFIGURATION for st.dataframe
+        column_config = {
+            "Codigo": st.column_config.TextColumn("ID", width="small", help="Código Externo"),
+            "URL_Ficha": st.column_config.LinkColumn("Web", display_text="🔗", width="small"),
+            "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
+            "Publicacion": st.column_config.DateColumn("Publicación", format="DD/MM/YYYY"),
+            "Cierre": st.column_config.DateColumn("Cierre", format="DD/MM/YYYY"),
+            "Categoría": st.column_config.TextColumn("Categoría", width="medium"),
+            "Keyword": st.column_config.TextColumn("Match", width="small"),
+            "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
+            "Tipo_Valor": st.column_config.TextColumn("Est.", width="small", help="🔵 = Estimado por rango UTM"),
+            "Monto": st.column_config.NumberColumn(
+                "Monto (CLP)", 
+                format="$%d", 
+                width="medium"
+            )
+        }
 
-        # Monto Formatting
-        monto_style_jscode = JsCode("""
-            function(params) {
-                if (params.data.Es_Estimado === true) {
-                    return {'color': '#1E90FF', 'font-weight': 'bold'};
-                }
-                return {'color': 'black'};
-            }
-        """)
-        
-        gb.configure_column("Monto", 
-                            type=["numericColumn", "numberColumnFilter"], 
-                            valueFormatter="x.toLocaleString('es-CL', {style: 'currency', currency: 'CLP'})", 
-                            cellStyle=monto_style_jscode,
-                            width=130)
-        
-        for col in ["Nombre", "Descripcion", "Es_Estimado"]:
-            gb.configure_column(col, hide=True)
-
-        grid_response = AgGrid(
+        # RENDER TABLE
+        # on_select="rerun" enables the interactive selection
+        event = st.dataframe(
             df_display,
-            gridOptions=gb.build(),
-            enable_enterprise_modules=False,
-            allow_unsafe_jscode=True,
-            update_mode="SELECTION_CHANGED",
-            height=800,
-            theme='streamlit'
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun", 
+            selection_mode="single-row",
+            height=600
         )
-        
-        selected = grid_response['selected_rows']
-        has_selection = False
-        if isinstance(selected, list): has_selection = len(selected) > 0
-        elif isinstance(selected, pd.DataFrame): has_selection = not selected.empty
 
-        if has_selection:
-            row = selected[0] if isinstance(selected, list) else selected.iloc[0]
-            if st.session_state.selected_code != row['Codigo']:
-                st.session_state.selected_code = row['Codigo']
+        # SELECTION LOGIC
+        if event.selection.rows:
+            # Get the index of the selected row
+            idx = event.selection.rows[0]
+            # Retrieve the Code from the displayed dataframe
+            code = df_display.iloc[idx]["Codigo"]
+            
+            if st.session_state.selected_code != code:
+                st.session_state.selected_code = code
                 st.rerun()
+
+    else:
+        st.info("No hay datos disponibles.")
 
 # --- TAB 2: DETAIL VIEW ---
 with tab_detail:
@@ -302,27 +264,23 @@ with tab_detail:
             st.subheader(f"{data.get('Nombre')}")
             st.caption(f"ID: {data.get('CodigoExterno')} | Estado: {data.get('Estado')}")
         with c2:
-            st.link_button("🌐 MercadoPúblico", data.get('URL_Publica'), use_container_width=True)
+            st.link_button("🌐 MercadoPúblico", data.get('URL_Publica') or "#", use_container_width=True)
 
         st.divider()
         
-        # --- SECTION 1: CARACTERÍSTICAS (Including Repair Data) ---
-        st.markdown("#### 📌 Características de la Licitación")
-        
+        # --- SECTION 1 ---
+        st.markdown("#### 📌 Características")
         if sec1:
-            # Check for MOP Fields
             mop_presupuesto = sec1.get("Presupuesto")
             mop_financ = sec1.get("FuenteFinanciamiento")
             
             k1, k2, k3 = st.columns(3)
             with k1:
                 st.write(f"**Tipo:** {sec1.get('Tipo de Licitación', 'N/A')}")
-                st.write(f"**Moneda:** {sec1.get('Moneda', 'N/A')}")
                 if mop_presupuesto:
                     st.write(f"**Presupuesto (Ficha):** :green[{mop_presupuesto}]")
             with k2:
                 st.write(f"**Etapas:** {sec1.get('Etapas del proceso', 'N/A')}")
-                st.write(f"**Toma Razón:** {sec1.get('Toma de Razón', 'N/A')}")
                 if mop_financ:
                     st.write(f"**Financiamiento:** {mop_financ}")
             with k3:
@@ -330,23 +288,22 @@ with tab_detail:
                 if sec1.get("TipoGastos"):
                     st.write(f"**Gastos:** {sec1.get('TipoGastos')}")
         else:
-            st.warning("No se pudo extraer la Sección 1.")
+            st.warning("Metadata extendida no disponible.")
 
         st.divider()
 
-        # --- STANDARD DATA ---
+        # --- GENERAL INFO ---
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("###### 🏢 Organismo")
             comp = data.get('Comprador', {})
             st.write(f"**Entidad:** {comp.get('NombreOrganismo')}")
             st.write(f"**Unidad:** {comp.get('NombreUnidad')}")
-            st.write(f"**Region:** {comp.get('RegionUnidad')}")
+            st.write(f"**Ubicación:** {comp.get('RegionUnidad')}")
         
         with col_b:
-            st.markdown("###### 💰 Negocio y Fechas")
-            
-            # Smart Monto Display
+            st.markdown("###### 💰 Negocio")
+            # Logic to explain the amount shown
             m_api = data.get('MontoEstimado')
             m_scrap = sec1.get("Presupuesto") if sec1 else None
             
@@ -362,13 +319,13 @@ with tab_detail:
                  else:
                      st.write("**Monto:** No informado")
 
-            st.write(f"**Publicación:** {data.get('Fechas', {}).get('FechaPublicacion', '')[:10]}")
             st.write(f"**Cierre:** {data.get('Fechas', {}).get('FechaCierre', '')[:10]}")
 
         st.divider()
         st.markdown("##### 📝 Descripción")
         st.info(data.get('Descripcion', 'Sin descripción'))
 
+        # --- ITEMS TABLE (Native Streamlit) ---
         st.divider()
         st.markdown("###### 📦 Ítems")
         items_list = data.get('Items', {}).get('Listado', [])
@@ -379,10 +336,10 @@ with tab_detail:
             df_items = pd.json_normalize(items_list)
             cols_wanted = ['NombreProducto', 'Descripcion', 'Cantidad', 'UnidadMedida']
             cols_present = [c for c in cols_wanted if c in df_items.columns]
-            st.dataframe(df_items[cols_present], use_container_width=True)
+            st.dataframe(df_items[cols_present], use_container_width=True, hide_index=True)
         else:
             st.warning("No hay detalle de ítems.")
 
     else:
         st.markdown("""<div style="text-align: center; padding: 50px; color: #666;">
-            <h3>👈 Selecciona una licitación</h3></div>""", unsafe_allow_html=True)
+            <h3>👈 Selecciona una licitación en el listado</h3></div>""", unsafe_allow_html=True)
