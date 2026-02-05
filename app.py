@@ -24,7 +24,6 @@ MAX_WORKERS = 5
 # --- KEYWORD LOGIC DEFINITIONS (SMART SEARCH) ---
 
 # 1. STRICT ACRONYMS (Exact Word Match):
-# Uses regex word boundaries (\b). "ATO" will match "El ATO visitó" but NOT "CONTRATO".
 STRICT_ACRONYMS = {
     "Inspección Técnica y Supervisión": [
         "AIF", "AIT", "ATIF", "ATOD", "AFOS", "ATO", "ITO", "A.T.O.", "I.T.O."
@@ -35,8 +34,6 @@ STRICT_ACRONYMS = {
 }
 
 # 2. FLEXIBLE CONCEPTS (AND Logic, Any Order):
-# All words in the list must appear, but order doesn't matter.
-# ["Diseño", "Cesfam"] matches: "Diseño de arquitectura para nuevo Cesfam"
 FLEXIBLE_CONCEPTS = {
     "Arquitectura y Edificación": [
         ["Diseño", "Cesfam"],
@@ -54,8 +51,6 @@ FLEXIBLE_CONCEPTS = {
 }
 
 # 3. STANDARD PHRASES (Ordered with Connector Tolerance):
-# Matches the sequence, but allows small connectors (de, del, y, para, el) in between.
-# "Huella Carbono" matches: "Huella de Carbono", "Huella Carbono"
 STANDARD_PHRASES = {
     "Inspección Técnica y Supervisión": [
         "Asesoría inspección", "Supervisión Construcción Pozos"
@@ -96,16 +91,13 @@ STANDARD_PHRASES = {
     ]
 }
 
-# --- PRE-COMPILATION (Optimizes Search Speed) ---
-
-# 1. Compile Strict Acronyms
+# --- PRE-COMPILATION ---
 COMPILED_STRICT = []
 for cat, terms in STRICT_ACRONYMS.items():
     for term in terms:
         pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
         COMPILED_STRICT.append((pattern, cat, term))
 
-# 2. Prepare Flexible Concepts
 FLATTENED_FLEXIBLE = []
 for cat, group_list in FLEXIBLE_CONCEPTS.items():
     for word_list in group_list:
@@ -113,13 +105,11 @@ for cat, group_list in FLEXIBLE_CONCEPTS.items():
         kw_display = " + ".join(word_list) 
         FLATTENED_FLEXIBLE.append((clean_set, cat, kw_display))
 
-# 3. Compile Standard Phrases with "Connector Tolerance"
 COMPILED_PHRASES = []
 for cat, phrases in STANDARD_PHRASES.items():
     for phrase in phrases:
         parts = phrase.split()
         if len(parts) > 1:
-            # Create regex allowing common connectors between words
             regex_parts = []
             for i, part in enumerate(parts):
                 regex_parts.append(re.escape(part))
@@ -160,7 +150,6 @@ def init_db():
     )''')
     conn.commit(); conn.close()
 
-# --- HELPERS ---
 def get_ignored_set():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -244,7 +233,7 @@ def save_cache(code, data):
 @st.cache_data(ttl=300) 
 def fetch_summaries_raw(start_date, end_date, ticket):
     results = []
-    errors = []
+    log_dates = [] # CHANGED: Track status per date
     delta = (end_date - start_date).days + 1
     session = get_api_session()
     
@@ -259,12 +248,13 @@ def fetch_summaries_raw(start_date, end_date, ticket):
                 items = js.get('Listado', [])
                 for item in items: item['_fecha_origen'] = d_str 
                 results.extend(items)
+                log_dates.append({"Fecha": d_str, "Estado": "OK", "Items": len(items)})
             else:
-                errors.append(f"Fecha {d_str}: Error {r.status_code}")
+                log_dates.append({"Fecha": d_str, "Estado": f"Error {r.status_code}", "Items": 0})
         except Exception as e:
-            errors.append(f"Fecha {d_str}: {str(e)}")
+             log_dates.append({"Fecha": d_str, "Estado": f"Excep: {str(e)}", "Items": 0})
             
-    return results, errors
+    return results, log_dates
 
 def fetch_detail_worker(args):
     code, ticket = args
@@ -292,25 +282,21 @@ def format_clp(v):
     try: return "${:,.0f}".format(float(v)).replace(",", ".")
     except: return "$0"
 
-# --- NEW SMART SEARCH FUNCTION ---
+# --- SMART SEARCH ---
 def get_cat(txt):
     if not txt: return None, None
     
     txt_lower = txt.lower()
-    # Create clean set of words for Flexible Search
     txt_clean_set = set(re.sub(r'[^\w\s]', ' ', txt_lower).split())
 
-    # 1. PRIORITY: Strict Acronyms (Exact match, whole word)
     for pattern, cat, kw in COMPILED_STRICT:
         if pattern.search(txt):
             return cat, kw
 
-    # 2. PRIORITY: Standard Phrases (Ordered, allows connectors)
     for pattern, cat, kw in COMPILED_PHRASES:
         if pattern.search(txt):
             return cat, kw
 
-    # 3. PRIORITY: Flexible Concepts (Any order)
     for req_set, cat, kw in FLATTENED_FLEXIBLE:
         if req_set.issubset(txt_clean_set):
             return cat, kw
@@ -334,7 +320,7 @@ def main():
     
     with c_date:
         today = datetime.now()
-        # CHANGED: Default is now 3 days to prevent hanging
+        # Default: last 3 days
         dr = st.date_input("Rango de Consulta", (today - timedelta(days=3), today), max_value=today, format="DD/MM/YYYY")
 
     with c_btn:
@@ -350,15 +336,21 @@ def main():
 
     t_res, t_sav, t_audit = st.tabs(["🔍 Resultados",  "💾 Guardados", " Auditoría",])
 
-    # --- LOGIC (AUTO-LOAD PRESERVED) ---
+    # --- LOGIC ---
     if 'search_results' not in st.session_state:
         if isinstance(dr, tuple): start, end = dr[0], dr[1] if len(dr)>1 else dr[0]
         else: start = end = dr
         
         with st.spinner("Descargando resúmenes..."):
-            raw_items, fetch_errors = fetch_summaries_raw(start, end, ticket)
+            # CHANGED: Capture log_dates
+            raw_items, log_dates = fetch_summaries_raw(start, end, ticket)
         
-        if fetch_errors: st.warning(f"Errores conexión: {len(fetch_errors)}")
+        # Store log_dates for audit tab
+        st.session_state.log_dates = pd.DataFrame(log_dates)
+        
+        # Show warning if any date failed
+        errors = [l for l in log_dates if l['Estado'] != 'OK']
+        if errors: st.warning(f"Errores conexión: {len(errors)}")
 
         audit_logs = []
         candidates = []
@@ -368,12 +360,26 @@ def main():
         
         for item in raw_items:
             code = item.get('CodigoExterno')
-            if code in ignored:
-                audit_logs.append({"ID": code, "Estado": "Ignorado"})
-                continue
-
+            
             full_txt = f"{item.get('Nombre','')} {item.get('Descripcion','')}"
             cat, kw = get_cat(full_txt)
+            
+            # CHANGED: Enhanced Audit Entry
+            # Note: Organismo/FechaPublicacion usually missing in Summary, will show empty
+            audit_entry = {
+                "ID": code,
+                "Nombre": item.get('Nombre', ''),
+                "Organismo": item.get('Comprador', {}).get('NombreOrganismo', ''), 
+                "FechaPublicacion": item.get('FechaPublicacion', ''),
+                "FechaCierre": item.get('FechaCierre', ''),
+                "Keyword Matched": kw if kw else "",
+                "Estado": ""
+            }
+
+            if code in ignored:
+                audit_entry["Estado"] = "Ignorado"
+                audit_logs.append(audit_entry)
+                continue
             
             if cat:
                 is_new = False
@@ -383,9 +389,11 @@ def main():
                 
                 item['_cat'], item['_kw'], item['_is_new'] = cat, kw, is_new
                 candidates.append(item)
-                audit_logs.append({"ID": code, "Estado": "Candidato"})
+                audit_entry["Estado"] = "Candidato"
+                audit_logs.append(audit_entry)
             else:
-                audit_logs.append({"ID": code, "Estado": "No Keyword"})
+                audit_entry["Estado"] = "No Keyword"
+                audit_logs.append(audit_entry)
 
         mark_as_seen(new_seen_ids)
 
@@ -393,7 +401,6 @@ def main():
         cached = get_cached_details([c['CodigoExterno'] for c in candidates])
         to_fetch = [c['CodigoExterno'] for c in candidates if c['CodigoExterno'] not in cached]
         
-        # --- PROGRESS BAR ---
         if to_fetch:
             progress_bar = st.progress(0, text="Iniciando descarga de detalles...")
             total_items = len(to_fetch)
@@ -442,8 +449,6 @@ def main():
         st.session_state.search_results = pd.DataFrame(final)
         st.session_state.audit_data = pd.DataFrame(audit_logs)
         
-        # --- SAFETY FIX: Ensure Columns Exist Immediately ---
-        # This prevents KeyError if the app loads empty or stale data
         if not st.session_state.search_results.empty:
              for col in ["Guardar", "Ignorar", "Seleccionar"]:
                 if col not in st.session_state.search_results.columns:
@@ -455,7 +460,6 @@ def main():
             df = st.session_state.search_results.copy()
             df = df.sort_values("FechaPublicacion", ascending=False)
 
-            # Filter Population
             with c_f1:
                 cat_sel = st.multiselect("Categoría", options=sorted(df["Categoría"].unique()), label_visibility="collapsed", placeholder="Filtrar Categoría...")
             with c_f2:
@@ -468,8 +472,6 @@ def main():
             visible = st.session_state.visible_rows
             df_visible = df.iloc[:visible]
 
-            # --- WORKAROUND FOR SELECTION ---
-            # data_editor does not support on_select. We use a checkbox column "Seleccionar" instead.
             if "Seleccionar" not in df_visible.columns:
                 df_visible.insert(0, "Seleccionar", False)
 
@@ -496,19 +498,14 @@ def main():
                 key="editor_main"
             )
 
-            # --- SIDEBAR TRIGGER LOGIC ---
-            # Detect row where "Seleccionar" is Checked
             sel_rows = edited_df[edited_df["Seleccionar"] == True]
             if not sel_rows.empty:
-                # Get the first selected row (simulating single selection)
                 idx = sel_rows.index[0] 
                 st.session_state['selected_tender'] = sel_rows.loc[idx].to_dict()
 
-            # --- ACTION BUTTONS ---
             c_btn1, c_btn2, c_more = st.columns([1, 1, 3])
             
             with c_btn1:
-                # Safety check for column existence
                 if "Guardar" in edited_df.columns:
                     to_save = edited_df[edited_df["Guardar"]]
                     if not to_save.empty:
@@ -520,7 +517,6 @@ def main():
                             time.sleep(1); st.rerun()
 
             with c_btn2:
-                # Safety check for column existence
                 if "Ignorar" in edited_df.columns:
                     to_ignore = edited_df[edited_df["Ignorar"]]
                     if not to_ignore.empty:
@@ -577,7 +573,16 @@ def main():
         st.dataframe(get_saved(), use_container_width=True, hide_index=True)
     
     with t_audit:
-        if 'audit_data' in st.session_state: st.dataframe(st.session_state.audit_data, use_container_width=True)
+        st.subheader("Registros Procesados")
+        if 'audit_data' in st.session_state: 
+            st.dataframe(st.session_state.audit_data, use_container_width=True)
+        
+        st.divider()
+        st.subheader("Estado de Descargas por Fecha")
+        if 'log_dates' in st.session_state:
+            st.dataframe(st.session_state.log_dates, use_container_width=True)
+        else:
+            st.info("Realiza una búsqueda para ver el estado de las descargas.")
 
 if __name__ == "__main__":
     main()
