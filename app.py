@@ -18,7 +18,7 @@ st.set_page_config(page_title="Monitor Licitaciones", page_icon="⚡", layout="w
 # Constants
 BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico"
 DB_FILE = "licitaciones_v9.db" 
-ITEMS_PER_LOAD = 50 
+ITEMS_PER_LOAD = 100  # INCREASED to 100 to show all candidates at once
 MAX_WORKERS = 5 
 
 # --- KEYWORD LOGIC DEFINITIONS (SMART SEARCH) ---
@@ -233,7 +233,7 @@ def save_cache(code, data):
 @st.cache_data(ttl=300) 
 def fetch_summaries_raw(start_date, end_date, ticket):
     results = []
-    log_dates = [] # CHANGED: Track status per date
+    log_dates = [] 
     delta = (end_date - start_date).days + 1
     session = get_api_session()
     
@@ -342,13 +342,10 @@ def main():
         else: start = end = dr
         
         with st.spinner("Descargando resúmenes..."):
-            # CHANGED: Capture log_dates
             raw_items, log_dates = fetch_summaries_raw(start, end, ticket)
         
-        # Store log_dates for audit tab
         st.session_state.log_dates = pd.DataFrame(log_dates)
         
-        # Show warning if any date failed
         errors = [l for l in log_dates if l['Estado'] != 'OK']
         if errors: st.warning(f"Errores conexión: {len(errors)}")
 
@@ -364,8 +361,6 @@ def main():
             full_txt = f"{item.get('Nombre','')} {item.get('Descripcion','')}"
             cat, kw = get_cat(full_txt)
             
-            # CHANGED: Enhanced Audit Entry
-            # Note: Organismo/FechaPublicacion usually missing in Summary, will show empty
             audit_entry = {
                 "ID": code,
                 "Nombre": item.get('Nombre', ''),
@@ -426,16 +421,32 @@ def main():
             code = cand['CodigoExterno']
             det = json.loads(cached.get(code, "{}")) if code in cached else {}
             
-            d_cierre = parse_date(det.get('Fechas', {}).get('FechaCierre'))
+            # --- FALLBACK LOGIC (Fix for missing data) ---
+            # Use detail data if available, otherwise use summary (cand) data
+            nombre = det.get('Nombre', '')
+            if not nombre:
+                nombre = cand.get('Nombre', '')
+            
+            organismo = det.get('Comprador', {}).get('NombreOrganismo', '')
+            if not organismo and 'Organismo' in cand: 
+                 organismo = cand.get('Organismo', '')
+            if not organismo:
+                organismo = "No disponible" 
+
+            fecha_cierre_str = det.get('Fechas', {}).get('FechaCierre')
+            if not fecha_cierre_str:
+                fecha_cierre_str = cand.get('FechaCierre') # Fallback to summary date
+            d_cierre = parse_date(fecha_cierre_str)
+            
             if d_cierre and d_cierre < datetime.now(): continue 
 
             final.append({
                 "CodigoExterno": code,
                 "Web": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
                 "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                "Nombre": det.get('Nombre','').title(),
-                "Organismo": det.get('Comprador',{}).get('NombreOrganismo','').title(),
-                "FechaPublicacion": parse_date(det.get('Fechas',{}).get('FechaPublicacion')),
+                "Nombre": nombre.title(),
+                "Organismo": organismo.title(),
+                "FechaPublicacion": parse_date(det.get('Fechas',{}).get('FechaPublicacion')), # This might be None if fetch failed
                 "FechaCierre": d_cierre,
                 "MontoStr": format_clp(det.get('MontoEstimado',0)),
                 "Descripcion": det.get('Descripcion',''),
