@@ -1,599 +1,388 @@
 import streamlit as st
 import pandas as pd
-import requests
-import urllib3
 import json
-import sqlite3
-import time
-import concurrent.futures
+import os
 import re
-from datetime import datetime, timedelta
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 # --- CONFIGURATION ---
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(page_title="Monitor Licitaciones", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_icon="🏗️")
 
-# Constants
-BASE_URL = "https://api.mercadopublico.cl/servicios/v1/publico"
-DB_FILE = "licitaciones_v9.db" 
-ITEMS_PER_LOAD = 100  # INCREASED to 100 to show all candidates at once
-MAX_WORKERS = 5 
+# UTM Value (Feb 2026 approx or current)
+UTM_VALUE = 69611 
 
-# --- KEYWORD LOGIC DEFINITIONS (SMART SEARCH) ---
+# Custom CSS
+st.markdown("""
+    <style>
+        .block-container { padding-top: 1rem; padding-bottom: 2rem; }
+        .stDataFrame { border: 1px solid #e0e0e0; border-radius: 5px; }
+        .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+        .stTabs [data-baseweb="tab"] { height: 50px; background-color: #f0f2f6; border-radius: 4px 4px 0 0; }
+        .stTabs [aria-selected="true"] { background-color: #ffffff; border-top: 2px solid #ff4b4b; }
+    </style>
+""", unsafe_allow_html=True)
 
-# 1. STRICT ACRONYMS (Exact Word Match):
-STRICT_ACRONYMS = {
-    "Inspección Técnica y Supervisión": [
-        "AIF", "AIT", "ATIF", "ATOD", "AFOS", "ATO", "ITO", "A.T.O.", "I.T.O."
-    ],
-    "Sustentabilidad y Medio Ambiente": [
-        "PACC", "PCC"
-    ]
-}
+if 'selected_code' not in st.session_state:
+    st.session_state.selected_code = None
 
-# 2. FLEXIBLE CONCEPTS (AND Logic, Any Order):
-FLEXIBLE_CONCEPTS = {
-    "Arquitectura y Edificación": [
-        ["Diseño", "Cesfam"],
-        ["Rehabilitación", "Cesfam"],
-        ["Elaboración", "Anteproyecto"],
-        ["Estudio", "Cabida"]
-    ],
-    "Infraestructura y Estudios Básicos": [
-        ["Estudio", "Demanda"],
-        ["Estudio", "Básico"]
-    ],
-    "Ingeniería, Geotecnia y Laboratorio": [
-         ["Estudio", "Ingeniería"]
-    ]
-}
+# ==========================================
+# 🧮 HELPER FUNCTIONS
+# ==========================================
 
-# 3. STANDARD PHRASES (Ordered with Connector Tolerance):
-STANDARD_PHRASES = {
-    "Inspección Técnica y Supervisión": [
-        "Asesoría inspección", "Supervisión Construcción Pozos"
-    ],
-    "Ingeniería, Geotecnia y Laboratorio": [
-        "Estructural", "Ingeniería Conceptual", "Evaluación Estructural", 
-        "Mecánica Suelos", "Geológico", "Geotécnico", "Hidrogeológico", "Ensayos"
-    ],
-    "Topografía y Levantamientos": [
-        "Topográfico", "Topografía", "Levantamiento", "Aerofotogrametría", 
-        "Aerofotogramétrico", "Levantamiento Catastro", "Condiciones Existentes"
-    ],
-    "Sustentabilidad y Medio Ambiente": [
-        "Huella Carbono", "Cambio climático", "Gases Efecto Invernadero", 
-        "Estrategia Climática", "Energética", "Sustentabilidad", "Sustentable", 
-        "Ruido Acústico", "Ruido Ambiental", "Riles", "Aguas Servidas", 
-        "Actualización de la Estrategia Climática Nacional", "Actualización del NDC",
-        "Metodología de cálculo de huella de carbono"
-    ],
-    "Gestión de Contratos y Forense": [
-        "Reclamaciones", "Revisión Contratos", "Revisión Ofertas", "Revisión Bases", 
-        "Auditoría Forense", "Análisis Costo", "Pérdida de productividad", 
-        "Peritajes Forenses", "Incendio Fuego", "Riesgo", "Estudio Vibraciones"
-    ],
-    "Arquitectura y Edificación": [
-        "Arquitectura", "Accesibilidad Universal", "Patrimonio", "Monumento Histórico"
-    ],
-    "Infraestructura y Estudios Básicos": [
-        "Aeródromo", "Aeropuerto", "Aeroportuario", "Túnel", "Vialidad", 
-        "Prefactibilidad", "Plan Inversional", "Obras de Emergencia", "Riego"
-    ],
-    "Mandantes Clave": [
-        "Ministerio de Vivienda", "Minvu", "Servicio de Vivienda", "Serviu", 
-        "Ministerio de Educación", "Mineduc", "Dirección Educación Pública", 
-        "Servicios Locales Educacionales", "Ministerio de Salud", "Servicio de Salud", 
-        "Dirección de Arquitectura", "Superintendencia de Infraestructura",
-        "Metropolitana", "Regional"
-    ]
-}
-
-# --- PRE-COMPILATION ---
-COMPILED_STRICT = []
-for cat, terms in STRICT_ACRONYMS.items():
-    for term in terms:
-        pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
-        COMPILED_STRICT.append((pattern, cat, term))
-
-FLATTENED_FLEXIBLE = []
-for cat, group_list in FLEXIBLE_CONCEPTS.items():
-    for word_list in group_list:
-        clean_set = {w.lower() for w in word_list}
-        kw_display = " + ".join(word_list) 
-        FLATTENED_FLEXIBLE.append((clean_set, cat, kw_display))
-
-COMPILED_PHRASES = []
-for cat, phrases in STANDARD_PHRASES.items():
-    for phrase in phrases:
-        parts = phrase.split()
-        if len(parts) > 1:
-            regex_parts = []
-            for i, part in enumerate(parts):
-                regex_parts.append(re.escape(part))
-                if i < len(parts) - 1:
-                    regex_parts.append(r'(?:\s+(?:de|del|y|para|en|el|la)\s+|\s+)')
-            pattern_str = "".join(regex_parts)
-            pattern = re.compile(pattern_str, re.IGNORECASE)
-        else:
-            pattern = re.compile(re.escape(phrase), re.IGNORECASE)
-        COMPILED_PHRASES.append((pattern, cat, phrase))
-
-
-# --- DATABASE ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS marcadores (
-        codigo_externo TEXT PRIMARY KEY,
-        nombre TEXT,
-        organismo TEXT,
-        fecha_cierre TEXT,
-        url TEXT,
-        raw_data TEXT,
-        fecha_guardado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS ignorados (
-        codigo_externo TEXT PRIMARY KEY,
-        fecha_ignorado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS cache_detalles (
-        codigo_externo TEXT PRIMARY KEY,
-        json_data TEXT,
-        fecha_ingreso TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS historial_vistas (
-        codigo_externo TEXT PRIMARY KEY,
-        fecha_primer_avistamiento TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    conn.commit(); conn.close()
-
-def get_ignored_set():
+def clean_money_string(text):
+    """
+    Cleans strings like '180.677.462' or '$ 500' into a float.
+    """
+    if not text: return 0
     try:
-        conn = sqlite3.connect(DB_FILE)
-        res = set(pd.read_sql("SELECT codigo_externo FROM ignorados", conn)['codigo_externo'])
-        conn.close()
-        return res
-    except: return set()
-
-def get_seen_set():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        res = set(pd.read_sql("SELECT codigo_externo FROM historial_vistas", conn)['codigo_externo'])
-        conn.close()
-        return res
-    except: return set()
-
-def mark_as_seen(codigos):
-    if not codigos: return
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.executemany("INSERT OR IGNORE INTO historial_vistas (codigo_externo) VALUES (?)", [(code,) for code in codigos])
-        conn.commit(); conn.close()
+        # Remove everything except digits
+        clean = re.sub(r'[^\d]', '', str(text))
+        if clean:
+            return float(clean)
     except: pass
+    return 0
 
-def ignore_tender(code):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("INSERT OR REPLACE INTO ignorados (codigo_externo) VALUES (?)", (code,))
-    conn.commit(); conn.close()
+def estimate_monto_from_text(text):
+    """
+    Parses strings like "igual o superior a 100 UTM e inferior a 1.000 UTM"
+    Returns: (Estimated Amount in CLP, Description)
+    """
+    if not text:
+        return 0, "No informado"
 
-def save_tender(data):
-    try:
-        clean = data.copy()
-        for k in ['Guardar','Ignorar','MontoStr','EstadoTiempo','EsNuevo','Web','Seleccionar']: 
-            clean.pop(k, None)
-        conn = sqlite3.connect(DB_FILE)
-        conn.execute("INSERT OR REPLACE INTO marcadores (codigo_externo, nombre, organismo, fecha_cierre, url, raw_data) VALUES (?,?,?,?,?,?)",
-                     (clean['CodigoExterno'], clean['Nombre'], clean['Organismo'], str(clean['FechaCierre']), clean['Link'], json.dumps(clean, default=str)))
-        conn.commit(); conn.close()
-        return True
-    except: return False
-
-def get_saved():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        df = pd.read_sql("SELECT * FROM marcadores ORDER BY fecha_guardado DESC", conn)
-        conn.close()
-        return df
-    except: return pd.DataFrame()
-
-def restore_tender(code):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("DELETE FROM ignorados WHERE codigo_externo = ?", (code,))
-    conn.commit(); conn.close()
-
-# --- API ---
-def get_api_session():
-    session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"})
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503], allowed_methods=["GET"])
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    return session
-
-def get_cached_details(codigos):
-    if not codigos: return {}
-    conn = sqlite3.connect(DB_FILE)
-    placeholders = ','.join(['?']*len(codigos))
-    try:
-        df = pd.read_sql(f"SELECT codigo_externo, json_data FROM cache_detalles WHERE codigo_externo IN ({placeholders})", conn, params=codigos)
-        conn.close()
-        return dict(zip(df['codigo_externo'], df['json_data']))
-    except: return {}
-
-def save_cache(code, data):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        conn.execute("INSERT OR REPLACE INTO cache_detalles (codigo_externo, json_data) VALUES (?,?)", (code, json.dumps(data)))
-        conn.commit(); conn.close()
-    except: pass
-
-@st.cache_data(ttl=300) 
-def fetch_summaries_raw(start_date, end_date, ticket):
-    results = []
-    log_dates = [] 
-    delta = (end_date - start_date).days + 1
-    session = get_api_session()
-    
-    for i in range(delta):
-        d = start_date + timedelta(days=i)
-        d_str = d.strftime("%d%m%Y")
-        url = f"{BASE_URL}/licitaciones.json?fecha={d_str}&ticket={ticket}"
+    matches = re.findall(r'(\d[\d\.]*)', text)
+    numbers = []
+    for m in matches:
         try:
-            r = session.get(url, verify=False, timeout=15)
-            if r.status_code == 200:
-                js = r.json()
-                items = js.get('Listado', [])
-                for item in items: item['_fecha_origen'] = d_str 
-                results.extend(items)
-                log_dates.append({"Fecha": d_str, "Estado": "OK", "Items": len(items)})
-            else:
-                log_dates.append({"Fecha": d_str, "Estado": f"Error {r.status_code}", "Items": 0})
-        except Exception as e:
-             log_dates.append({"Fecha": d_str, "Estado": f"Excep: {str(e)}", "Items": 0})
+            val = int(m.replace(".", ""))
+            numbers.append(val)
+        except: pass
+    
+    numbers = sorted(numbers)
+    min_utm = 0
+    max_utm = 0
+    text_lower = text.lower()
+    
+    if len(numbers) >= 2:
+        min_utm = numbers[0]
+        max_utm = numbers[1]
+    elif len(numbers) == 1:
+        val = numbers[0]
+        if "inferior" in text_lower or "menor" in text_lower:
+            min_utm = 0
+            max_utm = val
+        elif "superior" in text_lower or "mayor" in text_lower:
+            min_utm = val
+            max_utm = val * 3 
+        else:
+            min_utm = 0
+            max_utm = val
+    else:
+        return 0, "Rango no detectado"
+
+    avg_utm = (min_utm + max_utm) / 3
+    estimated_clp = avg_utm * UTM_VALUE
+    
+    return estimated_clp, f"Est. Rango {min_utm}-{max_utm} UTM"
+
+# ==========================================
+# 🛠️ DATA LOADING
+# ==========================================
+@st.cache_data
+def load_data(json_path):
+    if not os.path.exists(json_path):
+        return pd.DataFrame(), {}
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    rows = []
+    full_details_map = {}
+    
+    for item in data:
+        code = item.get("CodigoExterno")
+        
+        # --- MONTO PRIORITY LOGIC ---
+        monto_final = 0
+        is_estimated = False
+        monto_desc = "Monto Real (API)"
+        
+        # 1. Try API "MontoEstimado"
+        has_val = False
+        api_monto = item.get("MontoEstimado")
+        try:
+            if api_monto is not None:
+                m_val = float(api_monto)
+                if m_val > 0:
+                    monto_final = m_val
+                    has_val = True
+        except: pass
+        
+        # 2. Try Scraped "Presupuesto" (New MOP Field)
+        # This is considered a "Real" value, so is_estimated = False
+        if not has_val:
+            ext_meta = item.get("ExtendedMetadata", {})
+            sec1 = ext_meta.get("Section_1_Características", {})
+            presupuesto_str = sec1.get("Presupuesto")
             
-    return results, log_dates
+            p_val = clean_money_string(presupuesto_str)
+            if p_val > 0:
+                monto_final = p_val
+                has_val = True
+                monto_desc = "Presupuesto (Scraped)"
+        
+        # 3. Try Estimation (Fallback)
+        if not has_val:
+            ext_meta = item.get("ExtendedMetadata", {})
+            sec1 = ext_meta.get("Section_1_Características", {})
+            tipo_lic = sec1.get("Tipo de Licitación", "")
+            
+            if tipo_lic:
+                est_val, desc = estimate_monto_from_text(tipo_lic)
+                if est_val > 0:
+                    monto_final = est_val
+                    is_estimated = True
+                    monto_desc = desc
+        
+        # --- BUILD ROW ---
+        row = {
+            "Codigo": code,
+            "Nombre": item.get("Nombre", ""),
+            "Organismo": item.get("Comprador", {}).get("NombreOrganismo", ""),
+            "Monto": monto_final,
+            "Es_Estimado": is_estimated,
+            "Monto_Detalle": monto_desc,
+            "Publicacion": item.get("Fechas", {}).get("FechaPublicacion", "")[:10] if item.get("Fechas") else "",
+            "Cierre": item.get("Fechas", {}).get("FechaCierre", "")[:10] if item.get("Fechas") else "",
+            "Categoría IDIEM": item.get("Match_Category", "-"),
+            "Keyword": item.get("Match_Keyword", "-"),
+            "URL_Ficha": item.get("URL_Publica"),
+            "URL_Docs": item.get("URL_Documentos_Portal"),
+            "Descripcion": item.get("Descripcion", "")
+        }
+        
+        rows.append(row)
+        full_details_map[code] = item 
 
-def fetch_detail_worker(args):
-    code, ticket = args
-    try:
-        session = get_api_session() 
-        url = f"{BASE_URL}/licitaciones.json?codigo={code}&ticket={ticket}"
-        r = session.get(url, verify=False, timeout=20)
-        if r.status_code == 200:
-            js = r.json()
-            if js.get('Listado'):
-                return code, js['Listado'][0]
-    except: pass
-    return code, None
+    return pd.DataFrame(rows), full_details_map
 
-def parse_date(d):
-    if not d: return None
-    if isinstance(d, datetime): return d
-    s = str(d).strip().split('.')[0]
-    for f in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"]:
-        try: return datetime.strptime(s, f)
-        except: continue
-    return None
+# Load Data
+JSON_FILE = "FINAL_PRODUCTION_DATA.json" 
+df, full_map = load_data(JSON_FILE)
 
-def format_clp(v):
-    try: return "${:,.0f}".format(float(v)).replace(",", ".")
-    except: return "$0"
+# ==========================================
+# 🖥️ UI LAYOUT
+# ==========================================
 
-# --- SMART SEARCH ---
-def get_cat(txt):
-    if not txt: return None, None
+# Sidebar
+with st.sidebar:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/121px-Python-logo-notext.svg.png", width=40)
+    st.title("🎛️ Panel de Control")
+    st.metric("Licitaciones", len(df))
+    st.metric("Valor UTM", f"${UTM_VALUE:,.0f}".replace(",", "."))
     
-    txt_lower = txt.lower()
-    txt_clean_set = set(re.sub(r'[^\w\s]', ' ', txt_lower).split())
-
-    for pattern, cat, kw in COMPILED_STRICT:
-        if pattern.search(txt):
-            return cat, kw
-
-    for pattern, cat, kw in COMPILED_PHRASES:
-        if pattern.search(txt):
-            return cat, kw
-
-    for req_set, cat, kw in FLATTENED_FLEXIBLE:
-        if req_set.issubset(txt_clean_set):
-            return cat, kw
-
-    return None, None
-
-# --- MAIN ---
-def main():
-    init_db()
-    
-    if 'visible_rows' not in st.session_state:
-        st.session_state.visible_rows = ITEMS_PER_LOAD
-
-    ticket = st.secrets.get("MP_TICKET")
-    st.title("Monitor de Licitaciones IDIEM")
-    
-    if not ticket: st.warning("Falta Ticket (MP_TICKET)"); st.stop()
-
-    # --- HEADER ---
-    c_date, c_btn, c_spacer, c_f1, c_f2 = st.columns([1.5, 0.7, 0.3, 1.5, 1.5])
-    
-    with c_date:
-        today = datetime.now()
-        # Default: last 3 days
-        dr = st.date_input("Rango de Consulta", (today - timedelta(days=3), today), max_value=today, format="DD/MM/YYYY")
-
-    with c_btn:
-        st.write("") 
-        st.write("") 
-        do_search = st.button("🔍 Buscar Datos", use_container_width=True)
-
-    if do_search:
+    if st.button("🔄 Recargar", use_container_width=True):
         st.cache_data.clear()
-        if 'search_results' in st.session_state: del st.session_state['search_results']
-        st.session_state.visible_rows = ITEMS_PER_LOAD
         st.rerun()
+    
+    st.divider()
+    if st.session_state.selected_code:
+        st.info(f"Viendo: {st.session_state.selected_code}")
+        if st.button("🔙 Volver a Tabla"):
+            st.session_state.selected_code = None
+            st.rerun()
 
-    t_res, t_sav, t_audit = st.tabs(["🔍 Resultados",  "💾 Guardados", " Auditoría",])
+st.title("🏗️ Monitor Licitaciones IDIEM")
 
-    # --- LOGIC ---
-    if 'search_results' not in st.session_state:
-        if isinstance(dr, tuple): start, end = dr[0], dr[1] if len(dr)>1 else dr[0]
-        else: start = end = dr
+tab_list, tab_detail = st.tabs(["✅ Licitaciones", "📄 Ficha Técnica"])
+
+# --- TAB 1: TABLE ---
+with tab_list:
+    if not df.empty:
+        df_display = df.copy()
+        df_display['Nombre_Display'] = df_display['Nombre'].apply(lambda x: x[:85] + '...' if len(x) > 85 else x)
         
-        with st.spinner("Descargando resúmenes..."):
-            raw_items, log_dates = fetch_summaries_raw(start, end, ticket)
-        
-        st.session_state.log_dates = pd.DataFrame(log_dates)
-        
-        errors = [l for l in log_dates if l['Estado'] != 'OK']
-        if errors: st.warning(f"Errores conexión: {len(errors)}")
-
-        audit_logs = []
-        candidates = []
-        ignored = get_ignored_set()
-        seen = get_seen_set()
-        new_seen_ids = []
-        
-        for item in raw_items:
-            code = item.get('CodigoExterno')
-            
-            full_txt = f"{item.get('Nombre','')} {item.get('Descripcion','')}"
-            cat, kw = get_cat(full_txt)
-            
-            audit_entry = {
-                "ID": code,
-                "Nombre": item.get('Nombre', ''),
-                "Organismo": item.get('Comprador', {}).get('NombreOrganismo', ''), 
-                "FechaPublicacion": item.get('FechaPublicacion', ''),
-                "FechaCierre": item.get('FechaCierre', ''),
-                "Keyword Matched": kw if kw else "",
-                "Estado": ""
-            }
-
-            if code in ignored:
-                audit_entry["Estado"] = "Ignorado"
-                audit_logs.append(audit_entry)
-                continue
-            
-            if cat:
-                is_new = False
-                if code not in seen:
-                    is_new = True
-                    new_seen_ids.append(code)
-                
-                item['_cat'], item['_kw'], item['_is_new'] = cat, kw, is_new
-                candidates.append(item)
-                audit_entry["Estado"] = "Candidato"
-                audit_logs.append(audit_entry)
-            else:
-                audit_entry["Estado"] = "No Keyword"
-                audit_logs.append(audit_entry)
-
-        mark_as_seen(new_seen_ids)
-
-        # Fetch Details
-        cached = get_cached_details([c['CodigoExterno'] for c in candidates])
-        to_fetch = [c['CodigoExterno'] for c in candidates if c['CodigoExterno'] not in cached]
-        
-        if to_fetch:
-            progress_bar = st.progress(0, text="Iniciando descarga de detalles...")
-            total_items = len(to_fetch)
-            completed_items = 0
-            
-            tasks = [(code, ticket) for code in to_fetch]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
-                future_to_code = {exe.submit(fetch_detail_worker, t): t[0] for t in tasks}
-                for future in concurrent.futures.as_completed(future_to_code):
-                    c_code, c_data = future.result()
-                    if c_data:
-                        save_cache(c_code, c_data)
-                        cached[c_code] = json.dumps(c_data)
-                    
-                    completed_items += 1
-                    progress_percentage = min(completed_items / total_items, 1.0)
-                    progress_bar.progress(progress_percentage, text=f"Descargando {completed_items}/{total_items} detalles...")
-            
-            progress_bar.empty()
-
-        final = []
-        for cand in candidates:
-            code = cand['CodigoExterno']
-            det = json.loads(cached.get(code, "{}")) if code in cached else {}
-            
-            # --- FALLBACK LOGIC (Fix for missing data) ---
-            # Use detail data if available, otherwise use summary (cand) data
-            nombre = det.get('Nombre', '')
-            if not nombre:
-                nombre = cand.get('Nombre', '')
-            
-            organismo = det.get('Comprador', {}).get('NombreOrganismo', '')
-            if not organismo and 'Organismo' in cand: 
-                 organismo = cand.get('Organismo', '')
-            if not organismo:
-                organismo = "No disponible" 
-
-            fecha_cierre_str = det.get('Fechas', {}).get('FechaCierre')
-            if not fecha_cierre_str:
-                fecha_cierre_str = cand.get('FechaCierre') # Fallback to summary date
-            d_cierre = parse_date(fecha_cierre_str)
-            
-            if d_cierre and d_cierre < datetime.now(): continue 
-
-            final.append({
-                "CodigoExterno": code,
-                "Web": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                "Link": f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={code}",
-                "Nombre": nombre.title(),
-                "Organismo": organismo.title(),
-                "FechaPublicacion": parse_date(det.get('Fechas',{}).get('FechaPublicacion')), # This might be None if fetch failed
-                "FechaCierre": d_cierre,
-                "MontoStr": format_clp(det.get('MontoEstimado',0)),
-                "Descripcion": det.get('Descripcion',''),
-                "Categoría": cand['_cat'],
-                "Palabra Clave": cand['_kw'],
-                "EsNuevo": cand['_is_new'],
-                "Guardar": False,
-                "Ignorar": False
-            })
-        
-        st.session_state.search_results = pd.DataFrame(final)
-        st.session_state.audit_data = pd.DataFrame(audit_logs)
-        
-        if not st.session_state.search_results.empty:
-             for col in ["Guardar", "Ignorar", "Seleccionar"]:
-                if col not in st.session_state.search_results.columns:
-                    st.session_state.search_results[col] = False
-
-    # --- TAB RESULTADOS ---
-    with t_res:
-        if 'search_results' in st.session_state and not st.session_state.search_results.empty:
-            df = st.session_state.search_results.copy()
-            df = df.sort_values("FechaPublicacion", ascending=False)
-
-            with c_f1:
-                cat_sel = st.multiselect("Categoría", options=sorted(df["Categoría"].unique()), label_visibility="collapsed", placeholder="Filtrar Categoría...")
-            with c_f2:
-                kw_sel = st.multiselect("Keywords", options=sorted(df["Palabra Clave"].unique()), label_visibility="collapsed", placeholder="Filtrar Keyword...")
-
-            if cat_sel: df = df[df["Categoría"].isin(cat_sel)]
-            if kw_sel: df = df[df["Palabra Clave"].isin(kw_sel)]
-
-            total_rows = len(df)
-            visible = st.session_state.visible_rows
-            df_visible = df.iloc[:visible]
-
-            if "Seleccionar" not in df_visible.columns:
-                df_visible.insert(0, "Seleccionar", False)
-
-            # --- TABLE ---
-            edited_df = st.data_editor(
-                df_visible,
-                column_order=["Seleccionar", "Web","CodigoExterno","Nombre","Organismo","FechaPublicacion","FechaCierre","Categoría","Palabra Clave","EsNuevo","Guardar","Ignorar"],
-                column_config={
-                    "Seleccionar": st.column_config.CheckboxColumn("Ver", width="small", default=False),
-                    "Web": st.column_config.LinkColumn("URL", display_text="🌐", width="small"),
-                    "CodigoExterno": st.column_config.TextColumn("ID", width="small", disabled=True),
-                    "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large", disabled=True),
-                    "Organismo": st.column_config.TextColumn("Organismo", width="medium", disabled=True),
-                    "FechaPublicacion": st.column_config.DateColumn("Publicado", format="DD/MM/YY", disabled=True),
-                    "FechaCierre": st.column_config.DateColumn("Cierre", format="DD/MM/YY", disabled=True),
-                    "EsNuevo": st.column_config.CheckboxColumn("¿Nuevo?", disabled=True, width="small"),
-                    "Categoría": st.column_config.TextColumn("Categoría", width="small", disabled=True),
-                    "Palabra Clave": st.column_config.TextColumn("Keyword", width="small", disabled=True),
-                    "Guardar": st.column_config.CheckboxColumn("💾", width="small", default=False),
-                    "Ignorar": st.column_config.CheckboxColumn("❌", width="small", default=False),
-                },
-                hide_index=True, 
-                height=600,
-                key="editor_main"
+        # --- SIMPLE NOTE (Right Aligned) ---
+        _, c_note = st.columns([2, 3])
+        with c_note:
+            st.markdown(
+                """<div style="text-align: right; font-size: 0.85em; color: #555; margin-bottom: 5px;">
+                Nota: Los valores en <span style="color:#1E90FF; font-weight:bold">azul</span> son estimación basadas en el intervalo de valor UTM definidos en la licitación
+                </div>""", 
+                unsafe_allow_html=True
             )
 
-            sel_rows = edited_df[edited_df["Seleccionar"] == True]
-            if not sel_rows.empty:
-                idx = sel_rows.index[0] 
-                st.session_state['selected_tender'] = sel_rows.loc[idx].to_dict()
+        display_cols = [
+            'Codigo', 'URL_Ficha', 'Nombre_Display', 'Organismo','Publicacion', 'Cierre',
+            'Categoría IDIEM', 'Keyword', 'Monto',
+            'Nombre', 'Descripcion', 'Es_Estimado'
+        ]
+        df_display = df_display[[c for c in display_cols if c in df_display.columns]]
 
-            c_btn1, c_btn2, c_more = st.columns([1, 1, 3])
-            
-            with c_btn1:
-                if "Guardar" in edited_df.columns:
-                    to_save = edited_df[edited_df["Guardar"]]
-                    if not to_save.empty:
-                        if st.button(f"💾 Guardar ({len(to_save)})", type="primary"):
-                            count = 0
-                            for _, row in to_save.iterrows():
-                                if save_tender(row.to_dict()): count += 1
-                            st.toast(f"{count} guardados.", icon="✅")
-                            time.sleep(1); st.rerun()
-
-            with c_btn2:
-                if "Ignorar" in edited_df.columns:
-                    to_ignore = edited_df[edited_df["Ignorar"]]
-                    if not to_ignore.empty:
-                        if st.button(f"❌ Eliminar ({len(to_ignore)})"):
-                            for _, row in to_ignore.iterrows():
-                                ignore_tender(row['CodigoExterno'])
-                            st.toast(f"{len(to_ignore)} eliminados.", icon="🗑️")
-                            st.cache_data.clear(); del st.session_state['search_results']
-                            st.rerun()
-
-            with c_more:
-                if visible < total_rows:
-                    if st.button("⬇️ Cargar más resultados...", use_container_width=True):
-                        st.session_state.visible_rows += ITEMS_PER_LOAD
-                        st.rerun()
-        else:
-            st.info("Sin resultados.")
-
-    # --- SIDEBAR ---
-    with st.sidebar:
-        st.header("📋 Detalle")
-        if 'selected_tender' in st.session_state:
-            d = st.session_state['selected_tender']
-            if d.get('EsNuevo'): st.success("✨ Nueva detección")
-            
-            st.subheader(d['Nombre'])
-            st.write(f"**ID:** {d['CodigoExterno']}")
-            st.write(f"**Org:** {d['Organismo']}")
-            st.write(f"**Cierre:** {d['FechaCierre']}")
-            st.write(f"**Monto:** {d.get('MontoStr','-')}")
-            st.caption(d.get('Descripcion',''))
-            st.link_button("Ir a Mercado Público 🌐", d['Link'], use_container_width=True)
-            
-            c_s1, c_s2 = st.columns(2)
-            if c_s1.button("💾 Guardar", key="sb_save"):
-                if save_tender(d): st.toast("Guardado")
-            if c_s2.button("🚫 Ocultar", key="sb_ign"):
-                ignore_tender(d['CodigoExterno'])
-                st.toast("Ocultado")
-        else:
-            st.info("Marca la casilla 'Ver' en la tabla para ver detalles.")
+        gb = GridOptionsBuilder.from_dataframe(df_display)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=100)
+        gb.configure_selection('single', use_checkbox=True)
         
-        st.divider()
-        with st.expander("🛡️ Lista Negra"):
-            ign = get_ignored_set()
-            if ign:
-                s = st.selectbox("Restaurar ID", list(ign))
-                if st.button("Restaurar"):
-                    restore_tender(s); st.rerun()
-            else: st.write("Vacía")
-
-    # --- SAVED ---
-    with t_sav:
-        st.dataframe(get_saved(), use_container_width=True, hide_index=True)
-    
-    with t_audit:
-        st.subheader("Registros Procesados")
-        if 'audit_data' in st.session_state: 
-            st.dataframe(st.session_state.audit_data, use_container_width=True)
+        gb.configure_column("Codigo", header_name="ID", width=110, pinned="left")
         
-        st.divider()
-        st.subheader("Estado de Descargas por Fecha")
-        if 'log_dates' in st.session_state:
-            st.dataframe(st.session_state.log_dates, use_container_width=True)
-        else:
-            st.info("Realiza una búsqueda para ver el estado de las descargas.")
+        link_renderer = JsCode("""
+            class UrlCellRenderer {
+              init(params) {
+                this.eGui = document.createElement('a');
+                this.eGui.innerHTML = '🔗';
+                this.eGui.setAttribute('href', params.value);
+                this.eGui.setAttribute('target', '_blank');
+                this.eGui.style.textDecoration = 'none';
+                this.eGui.style.fontSize = '1.3em';
+                this.eGui.style.display = 'block';
+                this.eGui.style.textAlign = 'center';
+              }
+              getGui() { return this.eGui; }
+            }
+        """)
+        gb.configure_column("URL_Ficha", header_name="Web", cellRenderer=link_renderer, width=60, pinned="left")
+        
+        gb.configure_column("Nombre_Display", header_name="Nombre Licitación", width=400, tooltipField="Nombre")
+        gb.configure_column("Publicacion", width=110)
+        gb.configure_column("Cierre", width=110)
+        gb.configure_column("Categoría IDIEM", width=180)
+        gb.configure_column("Keyword", header_name="Match", width=150)
+        gb.configure_column("Organismo", width=200)
 
-if __name__ == "__main__":
-    main()
+        # Monto Formatting
+        monto_style_jscode = JsCode("""
+            function(params) {
+                if (params.data.Es_Estimado === true) {
+                    return {'color': '#1E90FF', 'font-weight': 'bold'};
+                }
+                return {'color': 'black'};
+            }
+        """)
+        
+        gb.configure_column("Monto", 
+                            type=["numericColumn", "numberColumnFilter"], 
+                            valueFormatter="x.toLocaleString('es-CL', {style: 'currency', currency: 'CLP'})", 
+                            cellStyle=monto_style_jscode,
+                            width=130)
+        
+        for col in ["Nombre", "Descripcion", "Es_Estimado"]:
+            gb.configure_column(col, hide=True)
+
+        grid_response = AgGrid(
+            df_display,
+            gridOptions=gb.build(),
+            enable_enterprise_modules=False,
+            allow_unsafe_jscode=True,
+            update_mode="SELECTION_CHANGED",
+            height=800,
+            theme='streamlit'
+        )
+        
+        selected = grid_response['selected_rows']
+        has_selection = False
+        if isinstance(selected, list): has_selection = len(selected) > 0
+        elif isinstance(selected, pd.DataFrame): has_selection = not selected.empty
+
+        if has_selection:
+            row = selected[0] if isinstance(selected, list) else selected.iloc[0]
+            if st.session_state.selected_code != row['Codigo']:
+                st.session_state.selected_code = row['Codigo']
+                st.rerun()
+
+# --- TAB 2: DETAIL VIEW ---
+with tab_detail:
+    if st.session_state.selected_code and st.session_state.selected_code in full_map:
+        data = full_map[st.session_state.selected_code]
+        ext_meta = data.get("ExtendedMetadata", {})
+        sec1 = ext_meta.get("Section_1_Características", {})
+        
+        # --- HEADER ---
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.subheader(f"{data.get('Nombre')}")
+            st.caption(f"ID: {data.get('CodigoExterno')} | Estado: {data.get('Estado')}")
+        with c2:
+            st.link_button("🌐 MercadoPúblico", data.get('URL_Publica'), use_container_width=True)
+
+        st.divider()
+        
+        # --- SECTION 1: CARACTERÍSTICAS (Including Repair Data) ---
+        st.markdown("#### 📌 Características de la Licitación")
+        
+        if sec1:
+            # Check for MOP Fields
+            mop_presupuesto = sec1.get("Presupuesto")
+            mop_financ = sec1.get("FuenteFinanciamiento")
+            
+            k1, k2, k3 = st.columns(3)
+            with k1:
+                st.write(f"**Tipo:** {sec1.get('Tipo de Licitación', 'N/A')}")
+                st.write(f"**Moneda:** {sec1.get('Moneda', 'N/A')}")
+                if mop_presupuesto:
+                    st.write(f"**Presupuesto (Ficha):** :green[{mop_presupuesto}]")
+            with k2:
+                st.write(f"**Etapas:** {sec1.get('Etapas del proceso', 'N/A')}")
+                st.write(f"**Toma Razón:** {sec1.get('Toma de Razón', 'N/A')}")
+                if mop_financ:
+                    st.write(f"**Financiamiento:** {mop_financ}")
+            with k3:
+                st.info(f"**Estado:** {sec1.get('Estado', 'N/A')}")
+                if sec1.get("TipoGastos"):
+                    st.write(f"**Gastos:** {sec1.get('TipoGastos')}")
+        else:
+            st.warning("No se pudo extraer la Sección 1.")
+
+        st.divider()
+
+        # --- STANDARD DATA ---
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("###### 🏢 Organismo")
+            comp = data.get('Comprador', {})
+            st.write(f"**Entidad:** {comp.get('NombreOrganismo')}")
+            st.write(f"**Unidad:** {comp.get('NombreUnidad')}")
+            st.write(f"**Region:** {comp.get('RegionUnidad')}")
+        
+        with col_b:
+            st.markdown("###### 💰 Negocio y Fechas")
+            
+            # Smart Monto Display
+            m_api = data.get('MontoEstimado')
+            m_scrap = sec1.get("Presupuesto") if sec1 else None
+            
+            if m_api and float(m_api) > 0:
+                 st.write(f"**Monto API:** {m_api}")
+            elif m_scrap:
+                 st.write(f"**Monto Scraped:** {m_scrap}")
+            else:
+                 est_val, desc = estimate_monto_from_text(sec1.get('Tipo de Licitación', ''))
+                 if est_val > 0:
+                     st.markdown(f"**Monto Estimado:** :blue[${est_val:,.0f}]")
+                     st.caption(f"({desc})")
+                 else:
+                     st.write("**Monto:** No informado")
+
+            st.write(f"**Publicación:** {data.get('Fechas', {}).get('FechaPublicacion', '')[:10]}")
+            st.write(f"**Cierre:** {data.get('Fechas', {}).get('FechaCierre', '')[:10]}")
+
+        st.divider()
+        st.markdown("##### 📝 Descripción")
+        st.info(data.get('Descripcion', 'Sin descripción'))
+
+        st.divider()
+        st.markdown("###### 📦 Ítems")
+        items_list = data.get('Items', {}).get('Listado', [])
+        if not items_list and 'DetalleArticulos' in data:
+            items_list = data['DetalleArticulos']
+            
+        if items_list:
+            df_items = pd.json_normalize(items_list)
+            cols_wanted = ['NombreProducto', 'Descripcion', 'Cantidad', 'UnidadMedida']
+            cols_present = [c for c in cols_wanted if c in df_items.columns]
+            st.dataframe(df_items[cols_present], use_container_width=True)
+        else:
+            st.warning("No hay detalle de ítems.")
+
+    else:
+        st.markdown("""<div style="text-align: center; padding: 50px; color: #666;">
+            <h3>👈 Selecciona una licitación</h3></div>""", unsafe_allow_html=True)
