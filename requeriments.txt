@@ -4,5 +4,5 @@ requests
 urllib3
 sqlalchemy
 numpy
-st-aggrid
+st_aggrid
 
