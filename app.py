@@ -86,11 +86,11 @@ def load_data(json_path):
         code = item.get("CodigoExterno")
         
         # --- MONTO LOGIC ---
-        monto_final = 0
+        monto_final = 0.0
         is_estimated = False
         monto_desc = "Monto Real (API)"
         
-        # 1. API
+        # 1. API (Real)
         has_val = False
         api_monto = item.get("MontoEstimado")
         try:
@@ -101,7 +101,7 @@ def load_data(json_path):
                     has_val = True
         except: pass
         
-        # 2. Scraped Presupuesto
+        # 2. Scraped Presupuesto (Real)
         if not has_val:
             ext_meta = item.get("ExtendedMetadata", {})
             sec1 = ext_meta.get("Section_1_Características", {})
@@ -112,7 +112,7 @@ def load_data(json_path):
                 has_val = True
                 monto_desc = "Presupuesto (Scraped)"
         
-        # 3. Estimation
+        # 3. Estimation (Estimated)
         if not has_val:
             ext_meta = item.get("ExtendedMetadata", {})
             sec1 = ext_meta.get("Section_1_Características", {})
@@ -125,16 +125,14 @@ def load_data(json_path):
                     monto_desc = desc
         
         # --- URL FIX ---
-        # Force the correct Procurement URL pattern
         fixed_url = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={code}"
 
-        # --- BUILD ROW ---
         row = {
             "Codigo": code,
             "Nombre": item.get("Nombre", ""),
             "Organismo": item.get("Comprador", {}).get("NombreOrganismo", ""),
-            "Monto": monto_final,
-            "Es_Estimado": is_estimated, # Hidden flag for styling
+            "Monto": monto_final, # Keep float for sorting
+            "Es_Estimado": is_estimated, 
             "Monto_Detalle": monto_desc,
             "Publicacion": item.get("Fechas", {}).get("FechaPublicacion", "")[:10] if item.get("Fechas") else "",
             "Cierre": item.get("Fechas", {}).get("FechaCierre", "")[:10] if item.get("Fechas") else "",
@@ -190,7 +188,7 @@ with tab_list:
                 unsafe_allow_html=True
             )
 
-        # 1. Select and Order Columns
+        # 1. Select Columns
         cols_order = [
             "Codigo", 
             "URL_Ficha", 
@@ -201,23 +199,36 @@ with tab_list:
             "Keyword", 
             "Organismo", 
             "Monto",
-            "Es_Estimado" # Needed for styling, will hide in config
+            "Es_Estimado"
         ]
         
         df_display = df[[c for c in cols_order if c in df.columns]].copy()
 
-        # 2. Apply Pandas Styler for Conditional Formatting
-        def style_monto(row):
-            # If Es_Estimado is True, return blue color for Monto column
-            color = '#1E90FF' if row['Es_Estimado'] else 'inherit'
-            weight = 'bold' if row['Es_Estimado'] else 'normal'
-            return [f'color: {color}; font-weight: {weight}' if col == 'Monto' else '' for col in row.index]
+        # 2. CREATE PANDAS STYLER
+        # This allows logic per row/cell
+        def color_logic(row):
+            # Default style
+            styles = ['' for _ in row.index]
+            
+            # Logic: If 'Es_Estimado' is True, color the 'Monto' column Blue & Bold
+            if row['Es_Estimado']:
+                # Find index of 'Monto'
+                if 'Monto' in row.index:
+                    monto_idx = row.index.get_loc('Monto')
+                    styles[monto_idx] = 'color: #1E90FF; font-weight: bold;'
+            
+            return styles
 
-        # Apply style and number format (Chilean style: dots)
-        styler = df_display.style.apply(style_monto, axis=1)
-        styler.format({"Monto": lambda x: f"$ {x:,.0f}".replace(",", ".")})
+        # Apply logic to rows (axis=1)
+        styler = df_display.style.apply(color_logic, axis=1)
 
-        # 3. Column Configuration (For Links and Widths)
+        # Apply Chilean Format (Dots for thousands) to Monto
+        # This keeps the column sortable by value, but displays nicely
+        styler.format({
+            "Monto": lambda x: f"$ {x:,.0f}".replace(",", ".") if x > 0 else "-"
+        })
+
+        # 3. CONFIGURE COLUMNS
         column_config = {
             "Codigo": st.column_config.TextColumn("ID", width="small"),
             "URL_Ficha": st.column_config.LinkColumn("Web", display_text="🔗", width="small"),
@@ -227,13 +238,13 @@ with tab_list:
             "Categoría": st.column_config.TextColumn("Categoría", width="medium"),
             "Keyword": st.column_config.TextColumn("Match", width="small"),
             "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
-            "Monto": st.column_config.Column("Monto (CLP)", width="medium"), # Basic config, Styler handles format
-            "Es_Estimado": None # Hide this column
+            "Monto": st.column_config.Column("Monto (CLP)", width="medium"), # Styler handles display
+            "Es_Estimado": None # Hide
         }
 
-        # 4. Render Dataframe
+        # 4. RENDER
         event = st.dataframe(
-            styler, # Pass the styled object
+            styler, 
             column_config=column_config,
             use_container_width=True,
             hide_index=True,
@@ -242,11 +253,9 @@ with tab_list:
             height=700 
         )
 
-        # Selection Logic
         if event.selection.rows:
             idx = event.selection.rows[0]
             code = df_display.iloc[idx]["Codigo"]
-            
             if st.session_state.selected_code != code:
                 st.session_state.selected_code = code
                 st.rerun()
@@ -261,7 +270,6 @@ with tab_detail:
         ext_meta = data.get("ExtendedMetadata", {})
         sec1 = ext_meta.get("Section_1_Características", {})
         
-        # --- HEADER ---
         c1, c2 = st.columns([4, 1])
         with c1:
             st.subheader(f"{data.get('Nombre')}")
@@ -271,7 +279,6 @@ with tab_detail:
 
         st.divider()
         
-        # --- SECTION 1 ---
         st.markdown("#### 📌 Características")
         if sec1:
             mop_presupuesto = sec1.get("Presupuesto")
@@ -295,7 +302,6 @@ with tab_detail:
 
         st.divider()
 
-        # --- GENERAL INFO ---
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("###### 🏢 Organismo")
@@ -327,7 +333,6 @@ with tab_detail:
         st.markdown("##### 📝 Descripción")
         st.info(data.get('Descripcion', 'Sin descripción'))
 
-        # --- ITEMS TABLE ---
         st.divider()
         st.markdown("###### 📦 Ítems")
         items_list = data.get('Items', {}).get('Listado', [])
