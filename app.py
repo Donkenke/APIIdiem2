@@ -271,11 +271,11 @@ tab_main, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "⭐ Guardadas", 
 def apply_text_color(df):
     """Applies text color to Monto based on Monto_Tipo"""
     def color_monto(row):
-        color = ''
+        color = '' 
         if row['Monto_Tipo'] == 'Estimado':
-            color = 'color: #26221d; font-weight: 500;' # Orange
+            color = 'color: #16a34a; font-weight: 500;' # Orange
         elif row['Monto_Tipo'] == 'Exacto':
-            color = 'color: #16a34a; font-weight: 500;' # Green
+            color = 'color: #26221d; font-weight: 500;' # Green
         return [color if col == 'Monto' else '' for col in row.index]
     return df.style.apply(color_monto, axis=1)
 
@@ -308,7 +308,14 @@ ordered = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto"
 # --- TAB 1 ---
 with tab_main:
     # Simple Note (Not Labels)
-    st.caption("Nota: Los montos en **verde** son exactos (API), los en **naranjo** son estimados.")
+    st.markdown(
+    """
+    <p style='text-align: right; color: grey; font-size: 12px;'>
+        Nota: Los montos en <span style='color: gray;'><strong>gris</strong></span> son exactos (API), los en <span style='color: green;'><strong>verde</strong></span> son estimados.
+    </p>
+    """,
+    unsafe_allow_html=True
+    )
     
     if not df_visible.empty:
         df_disp = df_visible.sort_values(by=["FechaPubObj"], ascending=False)
@@ -330,7 +337,14 @@ with tab_main:
 
 # --- TAB 2 ---
 with tab_saved:
-    st.caption("Nota: Los montos en **verde** son exactos, los en **naranjo** son estimados.")
+    st.markdown(
+    """
+    <p style='text-align: right; color: grey; font-size: 12px;'>
+        Nota: Los montos en <span style='color: gray;'><strong>gris</strong></span> son exactos (API), los en <span style='color: green;'><strong>verde</strong></span> son estimados.
+    </p>
+    """,
+    unsafe_allow_html=True
+    )
     
     if not df_saved_view.empty:
         styled_saved = apply_text_color(df_saved_view)
