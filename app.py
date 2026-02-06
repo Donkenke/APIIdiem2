@@ -11,7 +11,8 @@ st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_
 
 UTM_VALUE = 69611 
 JSON_FILE_MAIN = "FINAL_PRODUCTION_DATA.json"
-JSON_FILE_OBRAS = "OBRAS_CIVILES_DATA.json"
+# CHANGED: Now points to the processed/filtered file
+JSON_FILE_OBRAS = "OBRAS_CIVILES_READY.json" 
 DB_FILE = "licitaciones_state.db"
 
 # Custom CSS for Alignment and Styling
@@ -194,7 +195,7 @@ def load_data(filepath):
                 f_cierre_obj = datetime.strptime(f_cierre_str, "%Y-%m-%d").date()
                 delta = (f_cierre_obj - today).days
                 if delta < 0:
-                     f_cierre_str = f" {f_cierre_str}" # Expired
+                     f_cierre_str = f"🔴 {f_cierre_str}" # Expired
                 elif 0 <= delta <= 7:
                     f_cierre_str = f"⚠️ {f_cierre_str}" # Warning
             except: pass
@@ -300,10 +301,10 @@ tab_main, tab_obras, tab_saved, tab_detail, tab_audit = st.tabs(["📥 Disponibl
 
 # COL CONFIGS
 base_cfg = {
-    "URL": st.column_config.LinkColumn("Link", display_text="🌐", width="small"),
+    "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("Visto", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -315,8 +316,8 @@ base_cfg = {
 obras_cfg = base_cfg.copy()
 obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 
-order_main = ["URL", "Guardar", "Ocultar",  "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto"]
-order_obras = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Cierre", "Visto"]
+order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
+order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
 
 # --- TAB 1: DISPONIBLES (Has Date Filter) ---
 with tab_main:
@@ -399,7 +400,7 @@ with tab_obras:
         )
         if handle_grid_changes(ed_o, df_o_final): st.rerun()
     else:
-        st.info("No se encontraron registros de Obras Civiles.")
+        st.info("No se encontraron registros de Obras Civiles (¿Quizás son menores a 150M?).")
 
 # --- TAB 3: SAVED ---
 with tab_saved:
@@ -515,7 +516,7 @@ with tab_audit:
                 # Get the row from the DF
                 row = df_obras[df_obras["Codigo"] == code].iloc[0]
                 
-                # Check Org Filter - FIXED VARIABLE NAME (sel_orgs_o)
+                # Check Org Filter
                 if sel_orgs_o and row["Organismo"] not in sel_orgs_o:
                     is_filtered_ui = True
                 
