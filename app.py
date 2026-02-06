@@ -127,25 +127,25 @@ def format_clp(val):
 
 @st.cache_data
 def load_data(filepath):
-    # DEFINE STRUCTURE to prevent KeyError if file is empty
-    empty_structure = pd.DataFrame(columns=[
+    # PREVENT KEY ERROR: Ensure basic structure exists even if file is missing/empty
+    expected_cols = [
         "Codigo", "Nombre", "Organismo", "Estado_Lic", "Categoria", 
         "Monto_Num", "Monto", "Monto_Tipo", 
         "Fecha Pub", "FechaPubObj", "Fecha Cierre", "FechaCierreObj", "URL"
-    ])
-
+    ]
+    
     if not os.path.exists(filepath):
-        return empty_structure, {}
+        return pd.DataFrame(columns=expected_cols), {}
     
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception:
-        return empty_structure, {} # Return empty if JSON is corrupt/empty
-    
+        return pd.DataFrame(columns=expected_cols), {}
+        
     if not data:
-        return empty_structure, {}
-
+        return pd.DataFrame(columns=expected_cols), {}
+    
     rows = []
     full_map = {}
     today = date.today()
@@ -155,10 +155,8 @@ def load_data(filepath):
         name = str(item.get("Nombre", "")).title()
         org_name = str(item.get("Comprador", {}).get("NombreOrganismo", "")).title()
         
-        # New: Capture Estado (e.g. Publicada, Adjudicada)
         estado_lic = str(item.get("Estado", "Publicada")).title()
         
-        # Category
         cat = item.get("Match_Category")
         if not cat or cat == "Sin Categoría":
             cat = get_category(name)
@@ -224,7 +222,6 @@ def load_data(filepath):
 df_main, map_main = load_data(JSON_FILE_MAIN)
 df_obras, map_obras = load_data(JSON_FILE_OBRAS)
 
-# Combine maps for lookup
 full_map = {**map_main, **map_obras}
 hidden_ids, saved_ids, history_ids = get_db_lists()
 
@@ -234,11 +231,12 @@ hidden_ids, saved_ids, history_ids = get_db_lists()
 def prepare_view(df_in, sort_by="FechaPubObj"):
     if df_in.empty: return pd.DataFrame()
     
-    # 1. Filter Hidden
-    if "Codigo" in df_in.columns:
-        df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
-    else:
+    # Check if 'Codigo' exists to prevent crash on empty/malformed inputs
+    if "Codigo" not in df_in.columns:
         return pd.DataFrame()
+
+    # 1. Filter Hidden
+    df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
     
     # 2. Logic for Visto/Nuevo
     new_mask = ~df_out["Codigo"].isin(history_ids)
@@ -257,8 +255,9 @@ def prepare_view(df_in, sort_by="FechaPubObj"):
 
 def apply_text_color(df):
     def color_monto(row):
+        # Uses Gray for Exact (New request) and Orange for Estimated
         if row['Monto_Tipo'] == 'Estimado': return 'color: #d97706; font-weight: bold;'
-        if row['Monto_Tipo'] == 'Exacto': return 'color: #16a34a; font-weight: bold;'
+        if row['Monto_Tipo'] == 'Exacto': return 'color: #808080; font-weight: bold;'
         return ''
     return df.style.apply(lambda row: [color_monto(row) if col == 'Monto' else '' for col in row.index], axis=1)
 
@@ -278,70 +277,33 @@ def handle_grid_changes(edited, original):
 # ==========================================
 st.title("Monitor Licitaciones IDIEM")
 
-# Sidebar Filters
+# GLOBAL CONTROLS (Sidebar)
 with st.sidebar:
-    st.title("🎛️ Filtros")
-    
-    # Use Main Data for Filter Options (covers most cases)
-    if not df_main.empty:
-        valid_dates = df_main["FechaCierreObj"].dropna()
-        if not valid_dates.empty:
-            min_d, max_d = valid_dates.min(), valid_dates.max()
-            date_range = st.date_input("📅 Fecha de Cierre", [min_d, max_d])
-        else:
-            date_range = []
-        
-        all_cats = sorted(df_main["Categoria"].astype(str).unique().tolist())
-        sel_cats = st.multiselect("🏷️ Categoría", all_cats)
-        
-        all_orgs = sorted(df_main["Organismo"].astype(str).unique().tolist())
-        sel_orgs = st.multiselect("🏢 Organismo", all_orgs)
-    else:
-        date_range = []
-        sel_cats = []
-        sel_orgs = []
-
-    st.divider()
-    if st.button("🔄 Refrescar Datos", use_container_width=True):
+    st.title("🎛️ Control")
+    if st.button("🔄 Recargar Datos", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# Apply Filters Function
-def filter_df(df_target):
-    if df_target.empty: return df_target
-    df_res = df_target.copy()
-    
-    # Date Filter Logic: STRICT
-    if len(date_range) == 2:
-        df_res = df_res[
-            (df_res["FechaCierreObj"] >= date_range[0]) & 
-            (df_res["FechaCierreObj"] <= date_range[1])
-        ]
-        
-    if sel_cats: df_res = df_res[df_res["Categoria"].isin(sel_cats)]
-    if sel_orgs: df_res = df_res[df_res["Organismo"].isin(sel_orgs)]
-    return df_res
-
-# Search Dropdown
+# SEARCH (Global)
 all_search_codes = []
 if not df_main.empty: all_search_codes.extend(df_main["Codigo"].tolist())
 if not df_obras.empty: all_search_codes.extend(df_obras["Codigo"].tolist())
 all_search_codes = sorted(list(set(all_search_codes)))
 
-with st.expander("🔎 Ver Detalle (Buscar por ID)", expanded=False):
-    sel_code = st.selectbox("ID:", [""] + all_search_codes, format_func=lambda x: f"{x} - {full_map.get(x, {}).get('Nombre','')[:60]}..." if x else "Seleccionar...")
+with st.expander("🔎 Buscar Detalle Global (Todos los Registros)", expanded=False):
+    sel_code = st.selectbox("Escriba ID o Nombre:", [""] + all_search_codes, format_func=lambda x: f"{x} - {full_map.get(x, {}).get('Nombre','')[:60]}..." if x else "Seleccionar...")
     if sel_code and sel_code != st.session_state.selected_code:
         st.session_state.selected_code = sel_code
 
-# Tabs
-tab_main, tab_obras, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "🚧 Obras Civiles", "⭐ Guardadas", "📄 Ficha Técnica"])
+# TABS
+tab_main, tab_obras, tab_saved, tab_detail, tab_audit = st.tabs(["📥 Disponibles", "🚧 Obras Civiles", "⭐ Guardadas", "📄 Ficha Técnica", "🛠️ Auditoría Data"])
 
-# Column Configs
+# COL CONFIGS
 base_cfg = {
-    "URL": st.column_config.LinkColumn("Link", display_text="🌐", width="small"),
+    "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("Ver", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -350,21 +312,51 @@ base_cfg = {
     "Fecha Cierre": st.column_config.TextColumn("Cierre", width="small"),
     "Categoria": st.column_config.TextColumn("Categoría", width="medium"),
 }
-
-# Config for Obras (Includes Estado)
 obras_cfg = base_cfg.copy()
 obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 
-# Column Orders
-order_main = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria",  "Visto"]
-order_obras = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Cierre", "Visto"]
+order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
+order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
 
-# --- TAB 1: MAIN ---
+# --- TAB 1: DISPONIBLES (Has Date Filter) ---
 with tab_main:
-    st.caption("Montos: **Verde** (Exacto), **Naranjo** (Estimado).", text_alignment='right')
-    df_m_filtered = filter_df(df_main)
-    df_m_final = prepare_view(df_m_filtered)
+    # 1. LOCAL FILTERS FOR MAIN
+    c1, c2, c3 = st.columns(3)
     
+    # Calculate Defaults based on MAIN data
+    if not df_main.empty:
+        valid_dates = df_main["FechaCierreObj"].dropna()
+        min_d = valid_dates.min() if not valid_dates.empty else date.today()
+        max_d = valid_dates.max() if not valid_dates.empty else date.today()
+        all_cats = sorted(df_main["Categoria"].astype(str).unique().tolist())
+        all_orgs = sorted(df_main["Organismo"].astype(str).unique().tolist())
+    else:
+        min_d, max_d = date.today(), date.today()
+        all_cats, all_orgs = [], []
+
+    with c1:
+        date_range_m = st.date_input("📅 Fecha Cierre", [min_d, max_d], key="date_main")
+    with c2:
+        sel_cats_m = st.multiselect("🏷️ Categoría", all_cats, key="cat_main")
+    with c3:
+        sel_orgs_m = st.multiselect("🏢 Organismo", all_orgs, key="org_main")
+
+    st.caption("Montos: **Gris** (Exacto), **Naranjo** (Estimado).")
+
+    # 2. APPLY MAIN FILTERS
+    df_m_view = df_main.copy()
+    if not df_m_view.empty:
+        # Strict Date Filter only here
+        if len(date_range_m) == 2:
+            df_m_view = df_m_view[
+                (df_m_view["FechaCierreObj"] >= date_range_m[0]) & 
+                (df_m_view["FechaCierreObj"] <= date_range_m[1])
+            ]
+        if sel_cats_m: df_m_view = df_m_view[df_m_view["Categoria"].isin(sel_cats_m)]
+        if sel_orgs_m: df_m_view = df_m_view[df_m_view["Organismo"].isin(sel_orgs_m)]
+    
+    # 3. RENDER
+    df_m_final = prepare_view(df_m_view)
     if not df_m_final.empty:
         ed_m = st.data_editor(
             apply_text_color(df_m_final),
@@ -373,14 +365,32 @@ with tab_main:
         )
         if handle_grid_changes(ed_m, df_m_final): st.rerun()
     else:
-        st.info("Sin registros.")
+        st.info("Sin registros con los filtros actuales.")
 
-# --- TAB 2: OBRAS ---
+# --- TAB 2: OBRAS CIVILES (NO Date Filter) ---
 with tab_obras:
-    st.caption("Filtro: Items 'Obras Civiles'. Incluye Adjudicadas.")
-    df_o_filtered = filter_df(df_obras)
-    df_o_final = prepare_view(df_o_filtered)
+    # 1. LOCAL FILTER (Organismo Only)
+    c_o1, c_o2 = st.columns([1, 2])
     
+    if not df_obras.empty:
+        all_orgs_o = sorted(df_obras["Organismo"].astype(str).unique().tolist())
+    else:
+        all_orgs_o = []
+
+    with c_o1:
+        # NO Date Input here -> "Immune to Date Filter"
+        sel_orgs_o = st.multiselect("🏢 Filtrar por Organismo", all_orgs_o, key="org_obras")
+        
+    st.caption("Filtro: Items 'Obras Civiles'. Muestra todo el historial (incluyendo Adjudicadas y Vencidas).")
+    
+    # 2. APPLY FILTER
+    df_o_view = df_obras.copy()
+    if not df_o_view.empty:
+        if sel_orgs_o: 
+            df_o_view = df_o_view[df_o_view["Organismo"].isin(sel_orgs_o)]
+    
+    # 3. RENDER
+    df_o_final = prepare_view(df_o_view)
     if not df_o_final.empty:
         ed_o = st.data_editor(
             apply_text_color(df_o_final),
@@ -389,12 +399,12 @@ with tab_obras:
         )
         if handle_grid_changes(ed_o, df_o_final): st.rerun()
     else:
-        st.info("Sin registros. (Intente borrar el filtro de Fecha si busca licitaciones antiguas/adjudicadas)")
+        st.info("No se encontraron registros de Obras Civiles.")
 
 # --- TAB 3: SAVED ---
 with tab_saved:
     st.caption("Mis licitaciones guardadas.")
-    # Combine unique codes for saved view
+    # Combine unique codes
     df_combined = pd.concat([df_main, df_obras]).drop_duplicates(subset=["Codigo"]) if not df_main.empty or not df_obras.empty else pd.DataFrame()
     
     if not df_combined.empty:
@@ -463,3 +473,82 @@ with tab_detail:
             st.dataframe(pd.json_normalize(items), use_container_width=True)
     else:
         st.markdown("<br><h3 style='text-align:center; color:#ccc'>👈 Selecciona un ID arriba</h3>", unsafe_allow_html=True)
+
+# --- TAB 5: AUDIT (NEW) ---
+with tab_audit:
+    st.subheader("🕵️ Auditoría de Carga de Datos (Obras Civiles)")
+    st.markdown("Tabla de diagnóstico para ver por qué se filtran las filas.")
+    
+    # 1. READ RAW FILE MANUALLY
+    raw_list = []
+    if os.path.exists(JSON_FILE_OBRAS):
+        try:
+            with open(JSON_FILE_OBRAS, 'r', encoding='utf-8') as f:
+                raw_list = json.load(f)
+        except Exception as e:
+            st.error(f"Error leyendo JSON raw: {e}")
+    else:
+        st.error(f"Archivo {JSON_FILE_OBRAS} no encontrado.")
+
+    st.metric("Total Registros en JSON Raw", len(raw_list))
+
+    if raw_list:
+        audit_data = []
+        
+        # Get set of IDs currently in the DataFrame (Successful loads)
+        df_ids = set(df_obras["Codigo"].tolist()) if not df_obras.empty else set()
+        
+        for item in raw_list:
+            code = item.get("CodigoExterno", "SIN_CODIGO")
+            name = item.get("Nombre", "")
+            
+            # Step 1: Loaded in DF?
+            is_loaded = code in df_ids
+            
+            # Step 2: Hidden in DB?
+            is_hidden = code in hidden_ids
+            
+            # Step 3: Filtered by UI?
+            # Manually check if the logic in Tab 2 filters it out
+            is_filtered_ui = False
+            if is_loaded:
+                # Get the row from the DF
+                row = df_obras[df_obras["Codigo"] == code].iloc[0]
+                
+                # Check Org Filter
+                if s_orgs_o and row["Organismo"] not in s_orgs_o:
+                    is_filtered_ui = True
+                
+                # We specifically removed date filter for Obras, so checking date is not needed here
+
+            # FINAL STATUS
+            if not is_loaded: status = "❌ Error Parseo"
+            elif is_hidden: status = "👻 Oculto en DB"
+            elif is_filtered_ui: status = "🔍 Filtrado UI"
+            else: status = "✅ VISIBLE"
+
+            audit_data.append({
+                "Codigo": code,
+                "Nombre": name,
+                "1. En JSON": True,
+                "2. Parseado (DF)": is_loaded,
+                "3. DB Oculto": is_hidden,
+                "4. Filtro Org": is_filtered_ui,
+                "RESULTADO": status
+            })
+        
+        df_audit = pd.DataFrame(audit_data)
+        
+        st.dataframe(
+            df_audit,
+            column_config={
+                "1. En JSON": st.column_config.CheckboxColumn(width="small"),
+                "2. Parseado (DF)": st.column_config.CheckboxColumn(width="small"),
+                "3. DB Oculto": st.column_config.CheckboxColumn(width="small"),
+                "4. Filtro Org": st.column_config.CheckboxColumn(width="small"),
+                "RESULTADO": st.column_config.TextColumn(width="medium"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            height=600
+        )
