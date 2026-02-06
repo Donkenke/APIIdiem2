@@ -273,9 +273,9 @@ def apply_text_color(df):
     def color_monto(row):
         color = ''
         if row['Monto_Tipo'] == 'Estimado':
-            color = 'color: #26221d; font-weight: bold;' # Orange
+            color = 'color: #26221d; font-weight: 500;' # Orange
         elif row['Monto_Tipo'] == 'Exacto':
-            color = 'color: #16a34a; font-weight: bold;' # Green
+            color = 'color: #16a34a; font-weight: 500;' # Green
         return [color if col == 'Monto' else '' for col in row.index]
     return df.style.apply(color_monto, axis=1)
 
