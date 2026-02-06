@@ -273,7 +273,7 @@ def apply_text_color(df):
     def color_monto(row):
         color = ''
         if row['Monto_Tipo'] == 'Estimado':
-            color = 'color: #d97706; font-weight: bold;' # Orange
+            color = 'color: #26221d; font-weight: bold;' # Orange
         elif row['Monto_Tipo'] == 'Exacto':
             color = 'color: #16a34a; font-weight: bold;' # Green
         return [color if col == 'Monto' else '' for col in row.index]
@@ -291,10 +291,10 @@ def handle_changes(edited, original):
     return False
 
 col_config = {
-    "URL": st.column_config.LinkColumn("🔗", display_text="🔗", width="small"),
+    "URL": st.column_config.LinkColumn("Url", display_text="🌐", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("Visto", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -303,7 +303,7 @@ col_config = {
     "Fecha Cierre": st.column_config.TextColumn("Cierre", width="small"),
     "Categoria": st.column_config.TextColumn("Categoría", width="medium"),
 }
-ordered = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
+ordered = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto"]
 
 # --- TAB 1 ---
 with tab_main:
