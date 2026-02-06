@@ -300,10 +300,10 @@ tab_main, tab_obras, tab_saved, tab_detail, tab_audit = st.tabs(["📥 Disponibl
 
 # COL CONFIGS
 base_cfg = {
-    "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
+    "URL": st.column_config.LinkColumn("Link", display_text="🌐", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("Visto", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -315,8 +315,8 @@ base_cfg = {
 obras_cfg = base_cfg.copy()
 obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 
-order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
-order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
+order_main = ["URL", "Guardar", "Ocultar",  "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto"]
+order_obras = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Cierre", "Visto"]
 
 # --- TAB 1: DISPONIBLES (Has Date Filter) ---
 with tab_main:
