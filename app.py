@@ -10,47 +10,42 @@ from datetime import datetime, date
 st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_icon="🏗️")
 
 UTM_VALUE = 69611 
-JSON_FILE = "FINAL_PRODUCTION_DATA.json"
+JSON_FILE_MAIN = "FINAL_PRODUCTION_DATA.json"
+JSON_FILE_OBRAS = "OBRAS_CIVILES_DATA.json"
 DB_FILE = "licitaciones_state.db"
 
-# Custom CSS
+# Custom CSS for Alignment and Styling
 st.markdown("""
     <style>
         .block-container { padding-top: 1rem; padding-bottom: 2rem; }
         div.stButton > button:first-child { border-radius: 5px; }
         
-        /* Center headers for specific columns */
+        /* Center headers for specific columns (Link, Save, Hide, Seen) */
         th[aria-label="Link"], th[aria-label="💾"], th[aria-label="🗑️"], th[aria-label="👁️"] {
             text-align: center !important;
         }
-        /* Center content cells for the first few columns */
+        
+        /* Center content cells for the first 4 columns */
         [data-testid="stDataFrame"] table tbody td:nth-child(1),
         [data-testid="stDataFrame"] table tbody td:nth-child(2),
         [data-testid="stDataFrame"] table tbody td:nth-child(3),
         [data-testid="stDataFrame"] table tbody td:nth-child(4) {
             text-align: center !important;
+            display: table-cell; /* Ensure standard cell behavior */
+        }
+        
+        /* Center the content inside the cells via flex if needed for icons */
+        [data-testid="stDataFrame"] table tbody td:nth-child(1) div,
+        [data-testid="stDataFrame"] table tbody td:nth-child(2) div,
+        [data-testid="stDataFrame"] table tbody td:nth-child(3) div,
+        [data-testid="stDataFrame"] table tbody td:nth-child(4) div {
+            margin: 0 auto;
         }
     </style>
 """, unsafe_allow_html=True)
 
 if 'selected_code' not in st.session_state:
     st.session_state.selected_code = None
-
-# ==========================================
-# 🧠 CATEGORIZATION LOGIC
-# ==========================================
-def get_category(text):
-    if not text: return "General"
-    text = text.upper()
-    if re.search(r'\b(AIF|AIT|ATIF|ATOD|AFOS|ATO|ITO)\b', text): return "Inspección Técnica"
-    if re.search(r'\b(PACC|PCC)\b', text): return "Sustentabilidad"
-    if any(x in text for x in ["ASESORÍA INSPECCIÓN", "SUPERVISIÓN CONSTRUCCIÓN"]): return "Inspección Técnica"
-    if any(x in text for x in ["ESTRUCTURAL", "MECÁNICA SUELOS", "GEOLÓGICO", "GEOTÉCNICO", "ENSAYOS", "LABORATORIO"]): return "Ingeniería y Lab"
-    if any(x in text for x in ["TOPOGRÁFICO", "TOPOGRAFÍA", "LEVANTAMIENTO", "AEROFOTOGRAMETRÍA"]): return "Topografía"
-    if any(x in text for x in ["ARQUITECTURA", "DISEÑO ARQUITECTÓNICO"]): return "Arquitectura"
-    if any(x in text for x in ["EFICIENCIA ENERGÉTICA", "CERTIFICACIÓN", "SUSTENTABLE"]): return "Sustentabilidad"
-    if any(x in text for x in ["MODELACIÓN", "BIM", "COORDINACIÓN DIGITAL"]): return "BIM / Modelación"
-    return "Otras Civiles"
 
 # ==========================================
 # 🗄️ SQLITE DATABASE
@@ -100,6 +95,22 @@ def db_mark_seen(codes):
     conn.commit()
 
 # ==========================================
+# 🧠 CATEGORIZATION LOGIC
+# ==========================================
+def get_category(text):
+    if not text: return "General"
+    text = text.upper()
+    if re.search(r'\b(AIF|AIT|ATIF|ATOD|AFOS|ATO|ITO)\b', text): return "Inspección Técnica"
+    if re.search(r'\b(PACC|PCC)\b', text): return "Sustentabilidad"
+    if any(x in text for x in ["ASESORÍA INSPECCIÓN", "SUPERVISIÓN CONSTRUCCIÓN"]): return "Inspección Técnica"
+    if any(x in text for x in ["ESTRUCTURAL", "MECÁNICA SUELOS", "GEOLÓGICO", "GEOTÉCNICO", "ENSAYOS", "LABORATORIO"]): return "Ingeniería y Lab"
+    if any(x in text for x in ["TOPOGRÁFICO", "TOPOGRAFÍA", "LEVANTAMIENTO", "AEROFOTOGRAMETRÍA"]): return "Topografía"
+    if any(x in text for x in ["ARQUITECTURA", "DISEÑO ARQUITECTÓNICO"]): return "Arquitectura"
+    if any(x in text for x in ["EFICIENCIA ENERGÉTICA", "CERTIFICACIÓN", "SUSTENTABLE"]): return "Sustentabilidad"
+    if any(x in text for x in ["MODELACIÓN", "BIM", "COORDINACIÓN DIGITAL"]): return "BIM / Modelación"
+    return "Otras Civiles"
+
+# ==========================================
 # 🛠️ DATA PROCESSING
 # ==========================================
 def clean_money_string(text):
@@ -124,11 +135,11 @@ def format_clp(val):
     return f"${val:,.0f}".replace(",", ".")
 
 @st.cache_data
-def load_data():
-    if not os.path.exists(JSON_FILE):
+def load_data(filepath):
+    if not os.path.exists(filepath):
         return pd.DataFrame(), {}
     
-    with open(JSON_FILE, 'r', encoding='utf-8') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
     rows = []
@@ -140,14 +151,17 @@ def load_data():
         name = str(item.get("Nombre", "")).title()
         org_name = str(item.get("Comprador", {}).get("NombreOrganismo", "")).title()
         
+        # New: Capture Estado (e.g. Publicada, Adjudicada)
+        estado_lic = str(item.get("Estado", "Publicada")).title()
+        
+        # Category
         cat = item.get("Match_Category")
         if not cat or cat == "Sin Categoría":
             cat = get_category(name)
         
-        # --- MONTO LOGIC ---
+        # Monto Logic
         monto = 0
         monto_tipo = "Exacto"
-        
         if item.get("MontoEstimado") and float(item.get("MontoEstimado") or 0) > 0:
             monto = float(item.get("MontoEstimado"))
             monto_tipo = "Exacto"
@@ -158,10 +172,9 @@ def load_data():
                 monto_tipo = "Exacto"
             else:
                 monto = estimate_monto(ext.get("Tipo de Licitación", ""))
-                if monto > 0:
-                    monto_tipo = "Estimado"
+                if monto > 0: monto_tipo = "Estimado"
 
-        # --- DATES ---
+        # Dates
         fechas = item.get("Fechas") or {}
         
         raw_pub = fechas.get("FechaPublicacion")
@@ -178,20 +191,21 @@ def load_data():
             try:
                 f_cierre_obj = datetime.strptime(f_cierre_str, "%Y-%m-%d").date()
                 delta = (f_cierre_obj - today).days
-                if 0 <= delta <= 7:
-                    f_cierre_str = f"{f_cierre_str} ⚠️"
-                elif delta < 0:
-                     f_cierre_str = f"{f_cierre_str} (Cerrada)"
+                if delta < 0:
+                     f_cierre_str = f"🔴 {f_cierre_str}" # Expired
+                elif 0 <= delta <= 7:
+                    f_cierre_str = f"⚠️ {f_cierre_str}" # Warning
             except: pass
 
         rows.append({
             "Codigo": code,
             "Nombre": name,
             "Organismo": org_name,
+            "Estado_Lic": estado_lic, # New Column
             "Categoria": cat,
             "Monto_Num": monto,
             "Monto": format_clp(monto),
-            "Monto_Tipo": monto_tipo, # Used for styling
+            "Monto_Tipo": monto_tipo,
             "Fecha Pub": f_pub_str,
             "FechaPubObj": f_pub_obj,
             "Fecha Cierre": f_cierre_str,
@@ -202,28 +216,78 @@ def load_data():
         
     return pd.DataFrame(rows), full_map
 
-# Load Data
-df_raw, full_map = load_data()
+# Load Data Frames (Main + Obras)
+df_main, map_main = load_data(JSON_FILE_MAIN)
+df_obras, map_obras = load_data(JSON_FILE_OBRAS)
+
+# Combine maps for lookup
+full_map = {**map_main, **map_obras}
 hidden_ids, saved_ids, history_ids = get_db_lists()
 
 # ==========================================
-# 🔍 SIDEBAR FILTERS
+# 🔄 DATAFRAME PREP HELPER
 # ==========================================
+def prepare_view(df_in, sort_by="FechaPubObj"):
+    if df_in.empty: return pd.DataFrame()
+    
+    # 1. Filter Hidden
+    df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
+    
+    # 2. Logic for Visto/Nuevo
+    new_mask = ~df_out["Codigo"].isin(history_ids)
+    df_out["Visto"] = True 
+    df_out["Visto"].loc[new_mask] = False 
+    
+    # 3. Logic for Saved/Hidden Columns
+    df_out["Guardar"] = df_out["Codigo"].isin(saved_ids)
+    df_out["Ocultar"] = False
+    
+    # 4. Mark New as Seen (Side Effect)
+    if any(new_mask):
+        db_mark_seen(df_out.loc[new_mask, "Codigo"].tolist())
+    
+    return df_out.sort_values(by=[sort_by], ascending=False)
+
+def apply_text_color(df):
+    def color_monto(row):
+        if row['Monto_Tipo'] == 'Estimado': return 'color: #d97706; font-weight: bold;'
+        if row['Monto_Tipo'] == 'Exacto': return 'color: #16a34a; font-weight: bold;'
+        return ''
+    return df.style.apply(lambda row: [color_monto(row) if col == 'Monto' else '' for col in row.index], axis=1)
+
+def handle_grid_changes(edited, original):
+    if edited["Guardar"].ne(original["Guardar"]).any():
+        row = edited[edited["Guardar"] != original["Guardar"]].iloc[0]
+        db_toggle_save(row["Codigo"], row["Guardar"])
+        return True
+    if edited["Ocultar"].eq(True).any():
+        row = edited[edited["Ocultar"] == True].iloc[0]
+        db_hide_permanent(row["Codigo"])
+        return True
+    return False
+
+# ==========================================
+# 🖥️ MAIN UI
+# ==========================================
+st.title("Monitor Licitaciones IDIEM")
+
+# Sidebar Filters
 with st.sidebar:
     st.title("🎛️ Filtros")
-    if not df_raw.empty:
-        valid_dates = df_raw["FechaCierreObj"].dropna()
+    
+    # Use Main Data for Filter Options (covers most cases)
+    if not df_main.empty:
+        valid_dates = df_main["FechaCierreObj"].dropna()
         if not valid_dates.empty:
             min_d, max_d = valid_dates.min(), valid_dates.max()
             date_range = st.date_input("📅 Fecha de Cierre", [min_d, max_d])
         else:
             date_range = []
-            st.warning("Sin fechas válidas.")
         
-        all_cats = sorted(df_raw["Categoria"].astype(str).unique().tolist())
+        all_cats = sorted(df_main["Categoria"].astype(str).unique().tolist())
         sel_cats = st.multiselect("🏷️ Categoría", all_cats)
         
-        all_orgs = sorted(df_raw["Organismo"].astype(str).unique().tolist())
+        all_orgs = sorted(df_main["Organismo"].astype(str).unique().tolist())
         sel_orgs = st.multiselect("🏢 Organismo", all_orgs)
     else:
         date_range = []
@@ -235,78 +299,35 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# ==========================================
-# 🖥️ MAIN UI
-# ==========================================
-st.title("Monitor Licitaciones IDIEM")
-
-# Filter Logic
-if not df_raw.empty:
-    df_visible = df_raw[~df_raw["Codigo"].isin(hidden_ids)].copy()
-
+# Apply Filters Function
+def filter_df(df_target):
+    if df_target.empty: return df_target
+    df_res = df_target.copy()
     if len(date_range) == 2:
-        df_visible = df_visible[
-            (df_visible["FechaCierreObj"] >= date_range[0]) & 
-            (df_visible["FechaCierreObj"] <= date_range[1])
+        df_res = df_res[
+            (df_res["FechaCierreObj"] >= date_range[0]) & 
+            (df_res["FechaCierreObj"] <= date_range[1])
         ]
-    if sel_cats: df_visible = df_visible[df_visible["Categoria"].isin(sel_cats)]
-    if sel_orgs: df_visible = df_visible[df_visible["Organismo"].isin(sel_orgs)]
+    if sel_cats: df_res = df_res[df_res["Categoria"].isin(sel_cats)]
+    if sel_orgs: df_res = df_res[df_res["Organismo"].isin(sel_orgs)]
+    return df_res
 
-    new_mask = ~df_visible["Codigo"].isin(history_ids)
-    df_visible["Visto"] = True 
-    df_visible.loc[new_mask, "Visto"] = False 
-    
-    df_visible["Guardar"] = df_visible["Codigo"].isin(saved_ids)
-    df_visible["Ocultar"] = False
-    
-    new_codes = df_visible.loc[new_mask, "Codigo"].tolist()
-    if new_codes: db_mark_seen(new_codes)
-
-    df_saved_view = df_raw[df_raw["Codigo"].isin(saved_ids)].copy()
-    df_saved_view["Guardar"] = True
-    df_saved_view["Ocultar"] = False
-    df_saved_view["Visto"] = True
-else:
-    df_visible = pd.DataFrame()
-    df_saved_view = pd.DataFrame()
-
-# Detail Selector
-all_options = sorted(list(set(df_visible["Codigo"].tolist() + df_saved_view["Codigo"].tolist())))
+# Search Dropdown
+all_search_codes = sorted(list(set(df_main["Codigo"].tolist() + df_obras["Codigo"].tolist())))
 with st.expander("🔎 Ver Detalle (Buscar por ID)", expanded=False):
-    sel_code = st.selectbox("ID Licitación:", [""] + all_options, format_func=lambda x: f"{x} - {full_map.get(x, {}).get('Nombre','')[:60]}..." if x else "Seleccionar...")
+    sel_code = st.selectbox("ID:", [""] + all_search_codes, format_func=lambda x: f"{x} - {full_map.get(x, {}).get('Nombre','')[:60]}..." if x else "Seleccionar...")
     if sel_code and sel_code != st.session_state.selected_code:
         st.session_state.selected_code = sel_code
 
-tab_main, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "⭐ Guardadas", "📄 Ficha Técnica"])
+# Tabs
+tab_main, tab_obras, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "🚧 Obras Civiles", "⭐ Guardadas", "📄 Ficha Técnica"])
 
-# --- STYLING LOGIC (Text Color Only) ---
-def apply_text_color(df):
-    """Applies text color to Monto based on Monto_Tipo"""
-    def color_monto(row):
-        color = '' 
-        if row['Monto_Tipo'] == 'Estimado':
-            color = 'color: #16a34a; font-weight: 500;' # Orange
-        elif row['Monto_Tipo'] == 'Exacto':
-            color = 'color: #26221d; font-weight: 500;' # Green
-        return [color if col == 'Monto' else '' for col in row.index]
-    return df.style.apply(color_monto, axis=1)
-
-def handle_changes(edited, original):
-    if edited["Guardar"].ne(original["Guardar"]).any():
-        row = edited[edited["Guardar"] != original["Guardar"]].iloc[0]
-        db_toggle_save(row["Codigo"], row["Guardar"])
-        return True
-    if edited["Ocultar"].eq(True).any():
-        row = edited[edited["Ocultar"] == True].iloc[0]
-        db_hide_permanent(row["Codigo"])
-        return True
-    return False
-
-col_config = {
-    "URL": st.column_config.LinkColumn("Url", display_text="🌐", width="small"),
+# Column Configs
+base_cfg = {
+    "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("Visto", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -315,67 +336,65 @@ col_config = {
     "Fecha Cierre": st.column_config.TextColumn("Cierre", width="small"),
     "Categoria": st.column_config.TextColumn("Categoría", width="medium"),
 }
-ordered = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto"]
 
-# --- TAB 1 ---
+# Config for Obras (Includes Estado)
+obras_cfg = base_cfg.copy()
+obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
+
+# Column Orders
+order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
+order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
+
+# --- TAB 1: MAIN ---
 with tab_main:
-    # Simple Note (Not Labels)
-    st.markdown(
-    """
-    <p style='text-align: right; color: grey; font-size: 12px;'>
-        Nota: Los montos en <span style='color: gray;'><strong>gris</strong></span> son exactos (API), los en <span style='color: green;'><strong>verde</strong></span> son estimados.
-    </p>
-    """,
-    unsafe_allow_html=True
-    )
+    st.caption("Montos: **Verde** (Exacto), **Naranjo** (Estimado).")
+    df_m_filtered = filter_df(df_main)
+    df_m_final = prepare_view(df_m_filtered)
     
-    if not df_visible.empty:
-        df_disp = df_visible.sort_values(by=["FechaPubObj"], ascending=False)
-        styled_df = apply_text_color(df_disp)
-        
-        ukey = f"main_{len(df_disp)}_{st.session_state.get('last_update',0)}"
-        edited = st.data_editor(
-            styled_df, 
-            column_config=col_config,
-            column_order=ordered,
-            hide_index=True,
-            use_container_width=True,
-            height=600,
-            key=ukey
+    if not df_m_final.empty:
+        ed_m = st.data_editor(
+            apply_text_color(df_m_final),
+            column_config=base_cfg, column_order=order_main,
+            hide_index=True, use_container_width=True, height=600, key="main"
         )
-        if handle_changes(edited, df_disp):
-            st.session_state.last_update = datetime.now().timestamp()
-            st.rerun()
+        if handle_grid_changes(ed_m, df_m_final): st.rerun()
 
-# --- TAB 2 ---
-with tab_saved:
-    st.markdown(
-    """
-    <p style='text-align: right; color: grey; font-size: 12px;'>
-        Nota: Los montos en <span style='color: gray;'><strong>gris</strong></span> son exactos (API), los en <span style='color: green;'><strong>verde</strong></span> son estimados.
-    </p>
-    """,
-    unsafe_allow_html=True
-    )
+# --- TAB 2: OBRAS ---
+with tab_obras:
+    st.caption("Filtro: Items 'Obras Civiles'. Incluye Adjudicadas.")
+    df_o_filtered = filter_df(df_obras)
+    df_o_final = prepare_view(df_o_filtered)
     
-    if not df_saved_view.empty:
-        styled_saved = apply_text_color(df_saved_view)
-        ukey_s = f"saved_{len(df_saved_view)}_{st.session_state.get('last_update',0)}"
-        edited_s = st.data_editor(
-            styled_saved,
-            column_config=col_config,
-            column_order=ordered,
-            hide_index=True,
-            use_container_width=True,
-            key=ukey_s
+    if not df_o_final.empty:
+        ed_o = st.data_editor(
+            apply_text_color(df_o_final),
+            column_config=obras_cfg, column_order=order_obras,
+            hide_index=True, use_container_width=True, height=600, key="obras"
         )
-        if handle_changes(edited_s, df_saved_view):
-            st.session_state.last_update = datetime.now().timestamp()
-            st.rerun()
+        if handle_grid_changes(ed_o, df_o_final): st.rerun()
     else:
-        st.info("Sin guardados.")
+        st.info("Sin registros.")
 
-# --- TAB 3 (Detail) ---
+# --- TAB 3: SAVED ---
+with tab_saved:
+    st.caption("Mis licitaciones guardadas.")
+    # Create saved view from Main + Obras uniques
+    # We combine them because a saved item might only exist in Obras
+    df_combined = pd.concat([df_main, df_obras]).drop_duplicates(subset=["Codigo"])
+    df_s_filtered = df_combined[df_combined["Codigo"].isin(saved_ids)].copy()
+    df_s_final = prepare_view(df_s_filtered)
+    
+    if not df_s_final.empty:
+        ed_s = st.data_editor(
+            apply_text_color(df_s_final),
+            column_config=base_cfg, column_order=order_main,
+            hide_index=True, use_container_width=True, key="saved"
+        )
+        if handle_grid_changes(ed_s, df_s_final): st.rerun()
+    else:
+        st.info("No hay licitaciones guardadas.")
+
+# --- TAB 4: DETAIL ---
 with tab_detail:
     if st.session_state.selected_code and st.session_state.selected_code in full_map:
         code = st.session_state.selected_code
@@ -383,7 +402,7 @@ with tab_detail:
         
         status = "Guardado" if code in saved_ids else ("Nuevo" if code not in history_ids else "Visto")
         st.subheader(data.get("Nombre"))
-        st.caption(f"ID: {code} | Estado: {status}")
+        st.caption(f"ID: {code} | Estado UI: {status} | Estado Lic: {data.get('Estado')}")
         
         c_btn, _ = st.columns([1, 4])
         with c_btn:
@@ -398,22 +417,20 @@ with tab_detail:
         fechas = data.get("Fechas") or {}
 
         with c1:
-            st.markdown(f"**Organismo:** {str(data.get('Comprador', {}).get('NombreOrganismo', '-')).title()}")
-            st.markdown(f"**Tipo:** {sec1.get('Tipo de Licitación', '-')}")
-            st.markdown(f"**Cierre:** :red[{fechas.get('FechaCierre', 'No informado')}]")
-        
+             st.markdown(f"**Organismo:** {str(data.get('Comprador', {}).get('NombreOrganismo', '-')).title()}")
+             st.markdown(f"**Tipo:** {sec1.get('Tipo de Licitación', '-')}")
+             st.markdown(f"**Cierre:** :red[{fechas.get('FechaCierre', 'No informado')}]")
         with c2:
-            st.markdown(f"[🔗 Link MercadoPúblico]({data.get('URL_Publica')})")
-            
-            m_est = data.get("MontoEstimado")
-            if m_est and float(m_est) > 0:
-                st.markdown(f"**Monto (API):** :green[{format_clp(float(m_est))}]")
-            else:
-                p_text = sec1.get('Presupuesto')
-                p_clean = clean_money_string(p_text)
-                if p_clean > 0:
+             st.markdown(f"[🔗 Link MercadoPúblico]({data.get('URL_Publica')})")
+             m_est = data.get("MontoEstimado")
+             if m_est and float(m_est) > 0:
+                 st.markdown(f"**Monto (API):** :green[{format_clp(float(m_est))}]")
+             else:
+                 p_text = sec1.get('Presupuesto')
+                 p_clean = clean_money_string(p_text)
+                 if p_clean > 0:
                      st.markdown(f"**Presupuesto (Base):** :green[{format_clp(p_clean)}]")
-                else:
+                 else:
                      est_val = estimate_monto(sec1.get('Tipo de Licitación', ''))
                      if est_val > 0:
                          st.markdown(f"**Monto (Estimado):** :orange[{format_clp(est_val)}]")
