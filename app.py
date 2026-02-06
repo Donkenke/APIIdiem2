@@ -1,15 +1,3 @@
-Yes, you are absolutely correct. **The date filter is the reason.**
-
-If you have "Obras Civiles" that are **Adjudicada** (Awarded) or old, their `Fecha Cierre` (Closing Date) is likely in the **past** (e.g., 2025). Since your filter is set to **"2026/02/06 – 2026/03/31"** (Today onwards), it strictly hides all those past records.
-
-I have updated the code below with **two fixes**:
-
-1. **Robust Data Loading**: Fixes the `KeyError: 'Codigo'` crash if a file is empty or not found (it now creates an empty table structure instead of crashing).
-2. **Date Filter Safety**: I added a check so if the date filter is empty, it shows everything. **To see your Obras Civiles, simply clear the date filter (click the 'x' in the date picker) or select a range that includes the past.**
-
-Here is the fixed `app.py` retaining your **exact** design from version 16 (Icons, Order, Columns):
-
-```python
 import streamlit as st
 import pandas as pd
 import json
@@ -476,4 +464,3 @@ with tab_detail:
     else:
         st.markdown("<br><h3 style='text-align:center; color:#ccc'>👈 Selecciona un ID arriba</h3>", unsafe_allow_html=True)
 
-```
