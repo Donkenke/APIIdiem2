@@ -338,10 +338,10 @@ tab_main, tab_obras, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "🚧 
 
 # Column Configs
 base_cfg = {
-    "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
+    "URL": st.column_config.LinkColumn("Link", display_text="🌐", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
     "Ocultar": st.column_config.CheckboxColumn("🗑️", width="small"),
-    "Visto": st.column_config.CheckboxColumn("👁️", width="small", disabled=True),
+    "Visto": st.column_config.CheckboxColumn("Ver", width="small", disabled=True),
     "Codigo": st.column_config.TextColumn("ID", width="small"),
     "Nombre": st.column_config.TextColumn("Nombre Licitación", width="large"),
     "Organismo": st.column_config.TextColumn("Organismo", width="medium"),
@@ -356,12 +356,12 @@ obras_cfg = base_cfg.copy()
 obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 
 # Column Orders
-order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
-order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
+order_main = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria",  "Visto"]
+order_obras = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Cierre", "Visto"]
 
 # --- TAB 1: MAIN ---
 with tab_main:
-    st.caption("Montos: **Verde** (Exacto), **Naranjo** (Estimado).")
+    st.caption("Montos: **Verde** (Exacto), **Naranjo** (Estimado).", text_alignment='right')
     df_m_filtered = filter_df(df_main)
     df_m_final = prepare_view(df_m_filtered)
     
@@ -443,12 +443,12 @@ with tab_detail:
              st.markdown(f"[🔗 Link MercadoPúblico]({data.get('URL_Publica')})")
              m_est = data.get("MontoEstimado")
              if m_est and float(m_est) > 0:
-                 st.markdown(f"**Monto (API):** :green[{format_clp(float(m_est))}]")
+                 st.markdown(f"**Monto (API):** :gray[{format_clp(float(m_est))}]")
              else:
                  p_text = sec1.get('Presupuesto')
                  p_clean = clean_money_string(p_text)
                  if p_clean > 0:
-                     st.markdown(f"**Presupuesto (Base):** :green[{format_clp(p_clean)}]")
+                     st.markdown(f"**Presupuesto (Base):** :gray[{format_clp(p_clean)}]")
                  else:
                      est_val = estimate_monto(sec1.get('Tipo de Licitación', ''))
                      if est_val > 0:
