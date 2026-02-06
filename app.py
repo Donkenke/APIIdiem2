@@ -255,7 +255,7 @@ def prepare_view(df_in, sort_by="FechaPubObj"):
 
 def apply_text_color(df):
     def color_monto(row):
-        # Uses Gray for Exact (New request) and Orange for Estimated
+        # Uses Gray for Exact and Orange for Estimated
         if row['Monto_Tipo'] == 'Estimado': return 'color: #d97706; font-weight: bold;'
         if row['Monto_Tipo'] == 'Exacto': return 'color: #808080; font-weight: bold;'
         return ''
@@ -474,7 +474,7 @@ with tab_detail:
     else:
         st.markdown("<br><h3 style='text-align:center; color:#ccc'>👈 Selecciona un ID arriba</h3>", unsafe_allow_html=True)
 
-# --- TAB 5: AUDIT (NEW) ---
+# --- TAB 5: AUDIT (FIXED) ---
 with tab_audit:
     st.subheader("🕵️ Auditoría de Carga de Datos (Obras Civiles)")
     st.markdown("Tabla de diagnóstico para ver por qué se filtran las filas.")
@@ -515,8 +515,8 @@ with tab_audit:
                 # Get the row from the DF
                 row = df_obras[df_obras["Codigo"] == code].iloc[0]
                 
-                # Check Org Filter
-                if s_orgs_o and row["Organismo"] not in s_orgs_o:
+                # Check Org Filter - FIXED VARIABLE NAME (sel_orgs_o)
+                if sel_orgs_o and row["Organismo"] not in sel_orgs_o:
                     is_filtered_ui = True
                 
                 # We specifically removed date filter for Obras, so checking date is not needed here
