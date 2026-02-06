@@ -11,8 +11,7 @@ st.set_page_config(page_title="Monitor Licitaciones IDIEM", layout="wide", page_
 
 UTM_VALUE = 69611 
 JSON_FILE_MAIN = "FINAL_PRODUCTION_DATA.json"
-# CHANGED: Now points to the processed/filtered file
-JSON_FILE_OBRAS = "OBRAS_CIVILES_READY.json" 
+JSON_FILE_OBRAS = "OBRAS_CIVILES_DATA.json"
 DB_FILE = "licitaciones_state.db"
 
 # Custom CSS for Alignment and Styling
@@ -400,7 +399,7 @@ with tab_obras:
         )
         if handle_grid_changes(ed_o, df_o_final): st.rerun()
     else:
-        st.info("No se encontraron registros de Obras Civiles (¿Quizás son menores a 150M?).")
+        st.info("No se encontraron registros de Obras Civiles.")
 
 # --- TAB 3: SAVED ---
 with tab_saved:
@@ -516,7 +515,7 @@ with tab_audit:
                 # Get the row from the DF
                 row = df_obras[df_obras["Codigo"] == code].iloc[0]
                 
-                # Check Org Filter
+                # Check Org Filter - FIXED VARIABLE NAME (sel_orgs_o)
                 if sel_orgs_o and row["Organismo"] not in sel_orgs_o:
                     is_filtered_ui = True
                 
