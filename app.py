@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit as st
 import pandas as pd
 import json
 import os
@@ -127,6 +128,7 @@ def format_clp(val):
 
 @st.cache_data
 def load_data(filepath):
+    # PREVENT KEY ERROR: Ensure basic structure exists even if file is missing/empty
     expected_cols = [
         "Codigo", "Nombre", "Organismo", "Estado_Lic", "Categoria", 
         "Monto_Num", "Monto", "Monto_Tipo", 
@@ -141,10 +143,10 @@ def load_data(filepath):
             data = json.load(f)
     except Exception:
         return pd.DataFrame(columns=expected_cols), {}
-    
+        
     if not data:
         return pd.DataFrame(columns=expected_cols), {}
-
+    
     rows = []
     full_map = {}
     today = date.today()
@@ -153,6 +155,7 @@ def load_data(filepath):
         code = item.get("CodigoExterno")
         name = str(item.get("Nombre", "")).title()
         org_name = str(item.get("Comprador", {}).get("NombreOrganismo", "")).title()
+        
         estado_lic = str(item.get("Estado", "Publicada")).title()
         
         cat = item.get("Match_Category")
@@ -192,16 +195,16 @@ def load_data(filepath):
                 f_cierre_obj = datetime.strptime(f_cierre_str, "%Y-%m-%d").date()
                 delta = (f_cierre_obj - today).days
                 if delta < 0:
-                     f_cierre_str = f"🔴 {f_cierre_str}" 
+                     f_cierre_str = f"🔴 {f_cierre_str}" # Expired
                 elif 0 <= delta <= 7:
-                    f_cierre_str = f"⚠️ {f_cierre_str}" 
+                    f_cierre_str = f"⚠️ {f_cierre_str}" # Warning
             except: pass
 
         rows.append({
             "Codigo": code,
             "Nombre": name,
             "Organismo": org_name,
-            "Estado_Lic": estado_lic,
+            "Estado_Lic": estado_lic, # New Column
             "Categoria": cat,
             "Monto_Num": monto,
             "Monto": format_clp(monto),
@@ -224,23 +227,28 @@ full_map = {**map_main, **map_obras}
 hidden_ids, saved_ids, history_ids = get_db_lists()
 
 # ==========================================
-# 🔄 HELPERS
+# 🔄 DATAFRAME PREP HELPER
 # ==========================================
 def prepare_view(df_in, sort_by="FechaPubObj"):
     if df_in.empty: return pd.DataFrame()
     
-    if "Codigo" in df_in.columns:
-        df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
-    else:
+    # Check if 'Codigo' exists to prevent crash on empty/malformed inputs
+    if "Codigo" not in df_in.columns:
         return pd.DataFrame()
+
+    # 1. Filter Hidden
+    df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
     
+    # 2. Logic for Visto/Nuevo
     new_mask = ~df_out["Codigo"].isin(history_ids)
     df_out["Visto"] = True 
     df_out.loc[new_mask, "Visto"] = False 
     
+    # 3. Logic for Saved/Hidden Columns
     df_out["Guardar"] = df_out["Codigo"].isin(saved_ids)
     df_out["Ocultar"] = False
     
+    # 4. Mark New as Seen (Side Effect)
     if any(new_mask):
         db_mark_seen(df_out.loc[new_mask, "Codigo"].tolist())
     
@@ -269,14 +277,14 @@ def handle_grid_changes(edited, original):
 # ==========================================
 st.title("Monitor Licitaciones IDIEM")
 
-# GLOBAL CONTROLS (Top Sidebar)
+# GLOBAL CONTROLS (Sidebar)
 with st.sidebar:
     st.title("🎛️ Control")
     if st.button("🔄 Recargar Datos", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# GLOBAL SEARCH (Top of Page)
+# SEARCH (Global)
 all_search_codes = []
 if not df_main.empty: all_search_codes.extend(df_main["Codigo"].tolist())
 if not df_obras.empty: all_search_codes.extend(df_obras["Codigo"].tolist())
@@ -290,7 +298,7 @@ with st.expander("🔎 Buscar Detalle Global (Todos los Registros)", expanded=Fa
 # TABS
 tab_main, tab_obras, tab_saved, tab_detail = st.tabs(["📥 Disponibles", "🚧 Obras Civiles", "⭐ Guardadas", "📄 Ficha Técnica"])
 
-# --- COL CONFIGS ---
+# COL CONFIGS
 base_cfg = {
     "URL": st.column_config.LinkColumn("Link", display_text="🔗", width="small"),
     "Guardar": st.column_config.CheckboxColumn("💾", width="small"),
@@ -310,9 +318,9 @@ obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 order_main = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria"]
 order_obras = ["URL", "Guardar", "Ocultar", "Visto", "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre"]
 
-# --- TAB 1: DISPONIBLES (Local Filters) ---
+# --- TAB 1: DISPONIBLES (Has Date Filter) ---
 with tab_main:
-    # 1. LOCAL FILTERS FOR THIS TAB
+    # 1. LOCAL FILTERS FOR MAIN
     c1, c2, c3 = st.columns(3)
     
     # Calculate Defaults based on MAIN data
@@ -335,9 +343,10 @@ with tab_main:
 
     st.caption("Montos: **Verde** (Exacto), **Naranjo** (Estimado).")
 
-    # 2. APPLY FILTERS
+    # 2. APPLY MAIN FILTERS
     df_m_view = df_main.copy()
     if not df_m_view.empty:
+        # Strict Date Filter only here
         if len(date_range_m) == 2:
             df_m_view = df_m_view[
                 (df_m_view["FechaCierreObj"] >= date_range_m[0]) & 
@@ -358,9 +367,9 @@ with tab_main:
     else:
         st.info("Sin registros con los filtros actuales.")
 
-# --- TAB 2: OBRAS CIVILES (Independent Filters) ---
+# --- TAB 2: OBRAS CIVILES (NO Date Filter) ---
 with tab_obras:
-    # 1. LOCAL FILTER (Simple Org Filter Only - Immune to Date)
+    # 1. LOCAL FILTER (Organismo Only)
     c_o1, c_o2 = st.columns([1, 2])
     
     if not df_obras.empty:
@@ -369,9 +378,10 @@ with tab_obras:
         all_orgs_o = []
 
     with c_o1:
+        # NO Date Input here -> "Immune to Date Filter"
         sel_orgs_o = st.multiselect("🏢 Filtrar por Organismo", all_orgs_o, key="org_obras")
         
-    st.caption("Filtro: Items 'Obras Civiles'. Incluye Histórico (Adjudicadas/Vencidas).")
+    st.caption("Filtro: Items 'Obras Civiles'. Muestra todo el historial (incluyendo Adjudicadas y Vencidas).")
     
     # 2. APPLY FILTER
     df_o_view = df_obras.copy()
@@ -389,11 +399,12 @@ with tab_obras:
         )
         if handle_grid_changes(ed_o, df_o_final): st.rerun()
     else:
-        st.info("Sin registros de Obras Civiles.")
+        st.info("No se encontraron registros de Obras Civiles.")
 
 # --- TAB 3: SAVED ---
 with tab_saved:
-    st.caption("Mis licitaciones guardadas (Global).")
+    st.caption("Mis licitaciones guardadas.")
+    # Combine unique codes
     df_combined = pd.concat([df_main, df_obras]).drop_duplicates(subset=["Codigo"]) if not df_main.empty or not df_obras.empty else pd.DataFrame()
     
     if not df_combined.empty:
