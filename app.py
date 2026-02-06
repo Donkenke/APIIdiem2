@@ -18,6 +18,18 @@ st.markdown("""
     <style>
         .block-container { padding-top: 1rem; padding-bottom: 2rem; }
         div.stButton > button:first-child { border-radius: 5px; }
+        
+        /* Center headers for specific columns */
+        th[aria-label="Link"], th[aria-label="💾"], th[aria-label="🗑️"], th[aria-label="👁️"] {
+            text-align: center !important;
+        }
+        /* Center content cells for the first few columns */
+        [data-testid="stDataFrame"] table tbody td:nth-child(1),
+        [data-testid="stDataFrame"] table tbody td:nth-child(2),
+        [data-testid="stDataFrame"] table tbody td:nth-child(3),
+        [data-testid="stDataFrame"] table tbody td:nth-child(4) {
+            text-align: center !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
