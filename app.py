@@ -20,26 +20,17 @@ st.markdown("""
         .block-container { padding-top: 1rem; padding-bottom: 2rem; }
         div.stButton > button:first-child { border-radius: 5px; }
         
-        /* Center headers for specific columns (Link, Save, Hide, Seen) */
+        /* Center headers for specific columns */
         th[aria-label="Link"], th[aria-label="💾"], th[aria-label="🗑️"], th[aria-label="👁️"] {
             text-align: center !important;
         }
         
-        /* Center content cells for the first 4 columns */
+        /* Center content cells for the first few columns */
         [data-testid="stDataFrame"] table tbody td:nth-child(1),
         [data-testid="stDataFrame"] table tbody td:nth-child(2),
         [data-testid="stDataFrame"] table tbody td:nth-child(3),
         [data-testid="stDataFrame"] table tbody td:nth-child(4) {
             text-align: center !important;
-            display: table-cell; /* Ensure standard cell behavior */
-        }
-        
-        /* Center the content inside the cells via flex if needed for icons */
-        [data-testid="stDataFrame"] table tbody td:nth-child(1) div,
-        [data-testid="stDataFrame"] table tbody td:nth-child(2) div,
-        [data-testid="stDataFrame"] table tbody td:nth-child(3) div,
-        [data-testid="stDataFrame"] table tbody td:nth-child(4) div {
-            margin: 0 auto;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -136,11 +127,22 @@ def format_clp(val):
 
 @st.cache_data
 def load_data(filepath):
-    if not os.path.exists(filepath):
-        return pd.DataFrame(), {}
+    # DEFINE COLUMNS FOR EMPTY DATAFRAMES TO PREVENT KEY ERROR
+    expected_cols = [
+        "Codigo", "Nombre", "Organismo", "Estado_Lic", "Categoria", 
+        "Monto_Num", "Monto", "Monto_Tipo", 
+        "Fecha Pub", "FechaPubObj", "Fecha Cierre", "FechaCierreObj", "URL"
+    ]
     
-    with open(filepath, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    if not os.path.exists(filepath):
+        # RETURN EMPTY DF WITH CORRECT COLUMNS
+        return pd.DataFrame(columns=expected_cols), {}
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return pd.DataFrame(columns=expected_cols), {}
     
     rows = []
     full_map = {}
@@ -151,10 +153,7 @@ def load_data(filepath):
         name = str(item.get("Nombre", "")).title()
         org_name = str(item.get("Comprador", {}).get("NombreOrganismo", "")).title()
         
-        # New: Capture Estado (e.g. Publicada, Adjudicada)
         estado_lic = str(item.get("Estado", "Publicada")).title()
-        
-        # Category
         cat = item.get("Match_Category")
         if not cat or cat == "Sin Categoría":
             cat = get_category(name)
@@ -201,7 +200,7 @@ def load_data(filepath):
             "Codigo": code,
             "Nombre": name,
             "Organismo": org_name,
-            "Estado_Lic": estado_lic, # New Column
+            "Estado_Lic": estado_lic,
             "Categoria": cat,
             "Monto_Num": monto,
             "Monto": format_clp(monto),
@@ -213,14 +212,16 @@ def load_data(filepath):
             "URL": item.get("URL_Publica")
         })
         full_map[code] = item
-        
+    
+    if not rows:
+        return pd.DataFrame(columns=expected_cols), full_map
+
     return pd.DataFrame(rows), full_map
 
 # Load Data Frames (Main + Obras)
 df_main, map_main = load_data(JSON_FILE_MAIN)
 df_obras, map_obras = load_data(JSON_FILE_OBRAS)
 
-# Combine maps for lookup
 full_map = {**map_main, **map_obras}
 hidden_ids, saved_ids, history_ids = get_db_lists()
 
@@ -231,12 +232,15 @@ def prepare_view(df_in, sort_by="FechaPubObj"):
     if df_in.empty: return pd.DataFrame()
     
     # 1. Filter Hidden
-    df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
+    if "Codigo" in df_in.columns:
+        df_out = df_in[~df_in["Codigo"].isin(hidden_ids)].copy()
+    else:
+        return pd.DataFrame()
     
     # 2. Logic for Visto/Nuevo
     new_mask = ~df_out["Codigo"].isin(history_ids)
     df_out["Visto"] = True 
-    df_out["Visto"].loc[new_mask] = False 
+    df_out.loc[new_mask, "Visto"] = False 
     
     # 3. Logic for Saved/Hidden Columns
     df_out["Guardar"] = df_out["Codigo"].isin(saved_ids)
@@ -275,7 +279,6 @@ st.title("Monitor Licitaciones IDIEM")
 with st.sidebar:
     st.title("🎛️ Filtros")
     
-    # Use Main Data for Filter Options (covers most cases)
     if not df_main.empty:
         valid_dates = df_main["FechaCierreObj"].dropna()
         if not valid_dates.empty:
@@ -313,7 +316,11 @@ def filter_df(df_target):
     return df_res
 
 # Search Dropdown
-all_search_codes = sorted(list(set(df_main["Codigo"].tolist() + df_obras["Codigo"].tolist())))
+all_search_codes = []
+if not df_main.empty: all_search_codes.extend(df_main["Codigo"].tolist())
+if not df_obras.empty: all_search_codes.extend(df_obras["Codigo"].tolist())
+all_search_codes = sorted(list(set(all_search_codes)))
+
 with st.expander("🔎 Ver Detalle (Buscar por ID)", expanded=False):
     sel_code = st.selectbox("ID:", [""] + all_search_codes, format_func=lambda x: f"{x} - {full_map.get(x, {}).get('Nombre','')[:60]}..." if x else "Seleccionar...")
     if sel_code and sel_code != st.session_state.selected_code:
@@ -358,6 +365,8 @@ with tab_main:
             hide_index=True, use_container_width=True, height=600, key="main"
         )
         if handle_grid_changes(ed_m, df_m_final): st.rerun()
+    else:
+        st.info("Sin registros.")
 
 # --- TAB 2: OBRAS ---
 with tab_obras:
@@ -378,21 +387,24 @@ with tab_obras:
 # --- TAB 3: SAVED ---
 with tab_saved:
     st.caption("Mis licitaciones guardadas.")
-    # Create saved view from Main + Obras uniques
-    # We combine them because a saved item might only exist in Obras
-    df_combined = pd.concat([df_main, df_obras]).drop_duplicates(subset=["Codigo"])
-    df_s_filtered = df_combined[df_combined["Codigo"].isin(saved_ids)].copy()
-    df_s_final = prepare_view(df_s_filtered)
+    # Combine unique codes for saved view
+    df_combined = pd.concat([df_main, df_obras]).drop_duplicates(subset=["Codigo"]) if not df_main.empty or not df_obras.empty else pd.DataFrame()
     
-    if not df_s_final.empty:
-        ed_s = st.data_editor(
-            apply_text_color(df_s_final),
-            column_config=base_cfg, column_order=order_main,
-            hide_index=True, use_container_width=True, key="saved"
-        )
-        if handle_grid_changes(ed_s, df_s_final): st.rerun()
+    if not df_combined.empty:
+        df_s_filtered = df_combined[df_combined["Codigo"].isin(saved_ids)].copy()
+        df_s_final = prepare_view(df_s_filtered)
+        
+        if not df_s_final.empty:
+            ed_s = st.data_editor(
+                apply_text_color(df_s_final),
+                column_config=base_cfg, column_order=order_main,
+                hide_index=True, use_container_width=True, key="saved"
+            )
+            if handle_grid_changes(ed_s, df_s_final): st.rerun()
+        else:
+            st.info("No hay licitaciones guardadas.")
     else:
-        st.info("No hay licitaciones guardadas.")
+         st.info("No hay datos disponibles.")
 
 # --- TAB 4: DETAIL ---
 with tab_detail:
