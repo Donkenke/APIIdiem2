@@ -400,4 +400,4 @@ with tab_detail:
             st.markdown("###### Items")
             st.dataframe(pd.json_normalize(items), use_container_width=True)
     else:
-        st.markdown("<br><h3 style='text-align:center; color:#ccc'>👈 Selecciona un ID arriba</h3>", unsafe_allow_html=True)True)
+        st.markdown("<br><h3 style='text-align:center; color:#ccc'>👈 Selecciona un ID arriba</h3>", unsafe_allow_html=True)
