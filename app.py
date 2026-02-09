@@ -315,8 +315,8 @@ base_cfg = {
 obras_cfg = base_cfg.copy()
 obras_cfg["Estado_Lic"] = st.column_config.TextColumn("Estado", width="small")
 
-order_main = ["URL", "Guardar", "Ocultar", "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto"]
-order_obras = ["URL", "Guardar", "Ocultar",  "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre", "Visto"]
+order_main = ["URL", "Guardar",  "Codigo", "Nombre", "Organismo", "Monto", "Fecha Pub", "Fecha Cierre", "Categoria", "Visto", "Ocultar"]
+order_obras = ["URL", "Guardar",  "Codigo", "Nombre", "Organismo", "Estado_Lic", "Monto", "Fecha Pub", "Fecha Cierre", "Visto", "Ocultar"]
 
 # --- TAB 1: DISPONIBLES (Has Date Filter) ---
 with tab_main:
