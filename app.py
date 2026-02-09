@@ -194,9 +194,9 @@ def load_data(filepath):
                 f_cierre_obj = datetime.strptime(f_cierre_str, "%Y-%m-%d").date()
                 delta = (f_cierre_obj - today).days
                 if delta < 0:
-                     f_cierre_str = f"🔴 {f_cierre_str}" # Expired
+                     f_cierre_str = f" {f_cierre_str}" # Expired
                 elif 0 <= delta <= 7:
-                    f_cierre_str = f"⚠️ {f_cierre_str}" # Warning
+                    f_cierre_str = f" {f_cierre_str}" # Warning
             except: pass
 
         rows.append({
