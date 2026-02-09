@@ -212,7 +212,7 @@ def load_data(filepath):
             "FechaPubObj": f_pub_obj,
             "Fecha Cierre": f_cierre_str,
             "FechaCierreObj": f_cierre_obj,
-            "URL": item.get("URL_Publica")
+            "URL": item.get("URL_Documentos_Portal")
         })
         full_map[code] = item
         
@@ -450,7 +450,7 @@ with tab_detail:
              st.markdown(f"**Tipo:** {sec1.get('Tipo de Licitación', '-')}")
              st.markdown(f"**Cierre:** :red[{fechas.get('FechaCierre', 'No informado')}]")
         with c2:
-             st.markdown(f"[🔗 Link MercadoPúblico]({data.get('URL_Publica')})")
+             st.markdown(f"[🔗 Link MercadoPúblico]({data.get('URL_Documentos_Portal')})")
              m_est = data.get("MontoEstimado")
              if m_est and float(m_est) > 0:
                  st.markdown(f"**Monto (API):** :gray[{format_clp(float(m_est))}]")
